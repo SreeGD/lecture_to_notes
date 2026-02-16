@@ -1,0 +1,42 @@
+[project]
+name = "lecture-to-notes"
+version = "0.1.0"
+description = "Multi-Agent Lecture-to-Notes Pipeline — 5-Agent System for transcribing, enriching, and compiling Gaudiya Vaishnava lectures into structured notes"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "yt-dlp>=2024.0",
+    "faster-whisper>=1.0",
+    "beautifulsoup4>=4.12",
+    "mutagen>=1.47",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.optional-dependencies]
+diarize = [
+    "pyannote.audio>=3.1",
+    "torch>=2.0",
+]
+crewai = [
+    "crewai[tools]>=0.102.0",
+]
+llm = [
+    "anthropic>=0.39",
+]
+pdf = [
+    "fpdf2>=2.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "schema: Schema validation tests (no LLM, no I/O)",
+    "tool: Tool function tests (may use mocks)",
+    "pipeline: Deterministic pipeline tests",
+    "llm: Tests that call real LLM",
+    "integration: Cross-agent integration tests",
+    "slow: Tests requiring audio download/transcription",
+]

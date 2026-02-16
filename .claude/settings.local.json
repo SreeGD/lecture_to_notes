@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(pip freeze:*)",
+      "Bash(python run_pipeline.py:*)",
+      "Bash(brew install:*)",
+      "Bash(pdftoppm:*)"
+    ]
+  }
+}

@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Project outputs — generated per-run files
+output/*/audio/
+output/*/downloads/
+output/*/checkpoints/
+output/*/fonts/
+output/*/*.pdf
+output/*/*.md
+output/*/generate_pdf.py
+output/.latest_run
+
+# Legacy flat output files (before per-URL folders)
+output/*.wav
+output/*.mp3
+output/*.pdf
+output/audio/
+output/fonts/
+output/generate_pdf.py
+
+# Cache
+cache/vedabase_cache.json
+
+# Audio files (large binaries)
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.flac
+
+# Whisper models
+models/
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
