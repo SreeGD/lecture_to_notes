@@ -61,7 +61,9 @@ def organize_chapters(
         transcript = transcript_outputs[0] if transcript_outputs else {}
         segments = transcript.get("segments", [])
 
-        if len(segments) < CHAPTER_MIN_SEGMENTS * 2:
+        # When LLM enrichment exists, keep as single chapter — the LLM
+        # already produced a cohesive document covering the entire lecture.
+        if enriched.get("enriched_markdown") or len(segments) < CHAPTER_MIN_SEGMENTS * 2:
             ch = {
                 "number": 1,
                 "title": enriched.get("thematic_index", {}).get(
@@ -112,9 +114,6 @@ def organize_chapters(
                     s.get("end", 0) - s.get("start", 0) for s in ch_segments
                 ),
             }
-            # Attach enriched markdown to the first chapter
-            if ch_num == 1 and enriched.get("enriched_markdown"):
-                ch["enriched_markdown"] = enriched["enriched_markdown"]
             chapters.append(ch)
 
     return chapters
