@@ -5,20 +5,37 @@ yt-dlp>=2024.0
 faster-whisper>=1.0
 beautifulsoup4>=4.12
 mutagen>=1.47
+numpy>=2.0
+tokenizers>=0.22
+huggingface_hub>=1.0
+onnxruntime>=1.24
+ctranslate2>=4.0
+tqdm>=4.60
+
+# Markdown processing
+markdown2>=2.5
+markdown-it-py>=4.0
+
+# PDF generation
+fpdf2>=2.8
+weasyprint>=68.0
+pillow>=12.0
+
+# LLM enrichment
+anthropic>=0.39
+
+# CLI / utilities
+rich>=14.0
+typer>=0.23
+pyyaml>=6.0
 
 # Testing
 pytest>=8.0
 pytest-asyncio>=0.23
 
-# Optional: LLM enrichment
-anthropic>=0.39
-
-# Optional: PDF generation
-fpdf2>=2.8
-
-# Optional: Speaker diarization
+# Optional: Speaker diarization (uncomment if needed)
 # pyannote.audio>=3.1
 # torch>=2.0
 
-# Optional: CrewAI agentic mode
+# Optional: CrewAI agentic mode (uncomment if needed)
 # crewai[tools]>=0.102.0
