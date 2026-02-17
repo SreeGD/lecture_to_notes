@@ -54,8 +54,8 @@ python run_pipeline.py "https://youtube.com/watch?v=EXAMPLE"
 # Multiple URLs compiled into one book
 python run_pipeline.py "url1" "url2" "url3" --title "Collected Lectures"
 
-# With speaker diarization and LLM post-processing
-python run_pipeline.py "url" --speaker "Srila Prabhupada" --diarize --llm -v
+# With speaker diarization (LLM enrichment is on by default)
+python run_pipeline.py "url" --speaker "Srila Prabhupada" --diarize -v
 
 # Generate PDF output
 python run_pipeline.py "url" --pdf
@@ -75,7 +75,7 @@ python run_pipeline.py "url" --from-agent 3 --llm -v
 | `--whisper-model`, `-m` | Whisper model size | `large-v3` |
 | `--no-vad` | Disable Voice Activity Detection filter | *(VAD on)* |
 | `--diarize` | Enable speaker diarization (requires `[diarize]` extra) | *(off)* |
-| `--llm` | Enable LLM post-processing for transcript cleanup | *(off)* |
+| `--no-llm` | Disable LLM enrichment (on by default) | *(LLM on)* |
 | `--pdf` | Generate a styled PDF from the compiled book | *(off)* |
 | `--cache` | Path to vedabase.io cache file | `cache/vedabase_cache.json` |
 | `--from-agent N` | Start from agent N, loading earlier outputs from checkpoints (1-5) | `1` |
@@ -116,7 +116,7 @@ output/checkpoints/
 
 This is useful when:
 - A long transcription succeeds but enrichment fails — skip re-transcription with `--from-agent 3`
-- You want to re-enrich with `--llm` after a fast initial run — `--from-agent 3 --llm`
+- You want to re-enrich after a fast `--no-llm` run — `--from-agent 3`
 - PDF styling needs tweaking without re-running the full pipeline — `--from-agent 5 --pdf`
 
 ## Vedabase Verification
@@ -185,6 +185,10 @@ pytest -m slow        # Tests requiring audio download/transcription
 # Single file
 pytest tests/unit/test_checkpoint.py -v
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, coding guidelines, and areas where help is welcome.
 
 ## License
 
