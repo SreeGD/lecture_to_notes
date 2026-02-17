@@ -208,7 +208,7 @@ def run_enrichment_pipeline(
     enriched_markdown = None
     saranagathi_mapping = None
 
-    if enable_llm and verifications:
+    if enable_llm:
         logger.info("Step 5: Generating LLM-enhanced enriched notes (Master Prompt v6.0)")
 
         # Prepare verified verse data for LLM — only vedabase.io-sourced content
@@ -226,29 +226,24 @@ def run_enrichment_pipeline(
                     "cross_refs": v.cross_refs_in_purport,
                 })
 
-        if verified_verse_data:
-            llm_result = generate_enriched_notes_llm(
-                transcript_text=text,
-                verified_verses=verified_verse_data,
-            )
+        llm_result = generate_enriched_notes_llm(
+            transcript_text=text,
+            verified_verses=verified_verse_data,
+        )
 
-            if llm_result.get("enriched_markdown"):
-                enriched_markdown = llm_result["enriched_markdown"]
-                saranagathi_mapping = llm_result.get("saranagathi_mapping")
-                logger.info(
-                    "LLM enrichment complete: %d verses processed, %d chars output",
-                    llm_result.get("verses_processed", 0),
-                    len(enriched_markdown),
-                )
-            else:
-                logger.warning(
-                    "LLM enrichment returned no output: %s",
-                    llm_result.get("error", "unknown error"),
-                )
+        if llm_result.get("enriched_markdown"):
+            enriched_markdown = llm_result["enriched_markdown"]
+            saranagathi_mapping = llm_result.get("saranagathi_mapping")
+            logger.info(
+                "LLM enrichment complete: %d verses processed, %d chars output",
+                llm_result.get("verses_processed", 0),
+                len(enriched_markdown),
+            )
         else:
-            logger.info("Step 5: No verified verses with content; skipping LLM enrichment")
-    elif enable_llm and not verifications:
-        logger.info("Step 5: Skipping LLM enrichment (no verified verses)")
+            logger.warning(
+                "LLM enrichment returned no output: %s",
+                llm_result.get("error", "unknown error"),
+            )
     else:
         logger.info("Step 5: Skipping LLM enrichment (enable_llm=False)")
 

@@ -99,7 +99,14 @@ def main() -> int:
     parser.add_argument(
         "--llm",
         action="store_true",
-        help="Enable LLM post-processing for transcript cleanup",
+        default=True,
+        help="Enable LLM post-processing (on by default)",
+    )
+    parser.add_argument(
+        "--no-llm",
+        action="store_false",
+        dest="llm",
+        help="Disable LLM post-processing",
     )
     parser.add_argument(
         "--pdf",
