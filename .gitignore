@@ -26,18 +26,15 @@ output/*/audio/
 output/*/downloads/
 output/*/checkpoints/
 output/*/fonts/
-output/*/*.pdf
-output/*/*.md
-output/*/generate_pdf.py
+
 output/.latest_run
 
 # Legacy flat output files (before per-URL folders)
 output/*.wav
 output/*.mp3
-output/*.pdf
-output/audio/
+
 output/fonts/
-output/generate_pdf.py
+
 
 # Cache
 cache/vedabase_cache.json
