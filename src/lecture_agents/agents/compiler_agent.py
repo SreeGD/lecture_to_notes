@@ -9,6 +9,7 @@ book in Markdown format.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -163,8 +164,9 @@ def run_compiler_pipeline(
     full_parts.append(back_matter)
     full_book = "\n\n".join(full_parts)
 
-    # Write to file
-    output_path = str(Path(output_dir) / "final_book.md")
+    # Write to file — use title as filename
+    safe_name = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")
+    output_path = str(Path(output_dir) / f"{safe_name}.md")
     Path(output_path).write_text(full_book, encoding="utf-8")
     logger.info("Book written to: %s", output_path)
 
