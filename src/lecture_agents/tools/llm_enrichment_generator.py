@@ -49,6 +49,7 @@ def generate_enriched_notes_llm(
     master_prompt: str = ENRICHMENT_MASTER_PROMPT_V6,
     model: str = "claude-sonnet-4-5-20250929",
     max_tokens: int = 16384,
+    user_prompt: Optional[str] = None,
 ) -> dict:
     """
     Generate 15-section enriched notes using Claude with verified verse data.
@@ -107,6 +108,13 @@ def generate_enriched_notes_llm(
     # Build user message with transcript + verified verse data
     truncated = False
     user_message = _build_enrichment_context(transcript_text, verified_verses)
+
+    # Append user-provided custom instructions if present
+    if user_prompt:
+        user_message += (
+            "\n\n## Additional Instructions from User\n\n"
+            f"{user_prompt}\n"
+        )
 
     # Check estimated token count and trim if necessary
     estimated_tokens = len(user_message.split()) * _TOKENS_PER_WORD
@@ -188,43 +196,50 @@ def _build_enrichment_context(
     parts.append(transcript_text)
     parts.append("\n\n---\n\n")
 
-    parts.append("## Verified Verses from Vedabase.io\n\n")
-    parts.append(
-        "The following verses have been verified against vedabase.io. "
-        "Use ONLY this data for translations, purports, and Sanskrit text. "
-        "Do NOT generate scripture content from memory or training data.\n\n"
-    )
+    if verified_verses:
+        parts.append("## Verified Verses from Vedabase.io\n\n")
+        parts.append(
+            "The following verses have been verified against vedabase.io. "
+            "Use ONLY this data for translations, purports, and Sanskrit text. "
+            "Do NOT generate scripture content from memory or training data.\n\n"
+        )
 
-    for v in verified_verses:
-        ref = v.get("canonical_ref", "Unknown")
-        parts.append(f"### {ref}\n\n")
+        for v in verified_verses:
+            ref = v.get("canonical_ref", "Unknown")
+            parts.append(f"### {ref}\n\n")
 
-        if v.get("vedabase_url"):
-            parts.append(f"**Vedabase URL:** {v['vedabase_url']}\n\n")
-        if v.get("devanagari"):
-            parts.append(f"**Devanagari:**\n{v['devanagari']}\n\n")
-        if v.get("verse_text"):
-            parts.append(f"**IAST Transliteration:**\n{v['verse_text']}\n\n")
-        if v.get("synonyms"):
-            parts.append(f"**Synonyms:**\n{v['synonyms']}\n\n")
-        if v.get("translation"):
-            parts.append(f"**Translation:**\n{v['translation']}\n\n")
-        if v.get("purport_excerpt"):
-            parts.append(f"**Purport (excerpt):**\n{v['purport_excerpt']}\n\n")
-        if v.get("cross_refs"):
-            parts.append(
-                f"**Cross-references in purport:** {', '.join(v['cross_refs'])}\n\n"
-            )
+            if v.get("vedabase_url"):
+                parts.append(f"**Vedabase URL:** {v['vedabase_url']}\n\n")
+            if v.get("devanagari"):
+                parts.append(f"**Devanagari:**\n{v['devanagari']}\n\n")
+            if v.get("verse_text"):
+                parts.append(f"**IAST Transliteration:**\n{v['verse_text']}\n\n")
+            if v.get("synonyms"):
+                parts.append(f"**Synonyms:**\n{v['synonyms']}\n\n")
+            if v.get("translation"):
+                parts.append(f"**Translation:**\n{v['translation']}\n\n")
+            if v.get("purport_excerpt"):
+                parts.append(f"**Purport (excerpt):**\n{v['purport_excerpt']}\n\n")
+            if v.get("cross_refs"):
+                parts.append(
+                    f"**Cross-references in purport:** {', '.join(v['cross_refs'])}\n\n"
+                )
 
-        parts.append("---\n\n")
+            parts.append("---\n\n")
+    else:
+        parts.append("## Note on Verse References\n\n")
+        parts.append(
+            "No verse references could be verified against vedabase.io for this "
+            "lecture. Identify verses discussed by the speaker from context and "
+            "mark them as [From Lecture — Verify Against Vedabase.io]. "
+            "Do NOT generate translations or purports from training data.\n\n"
+        )
 
     parts.append("## Instructions\n\n")
     parts.append(
-        "Generate complete enriched class notes following the Master Prompt v6.0 "
-        "15-section format for each verified verse above. Use the verified "
-        "vedabase.io data as the authoritative source for all Sanskrit text, "
-        "translations, and purport content. Include SARANAGATHI classification, "
-        "acarya commentaries, bhajan connections, and practical applications.\n"
+        "Generate structured lecture notes following the system prompt format. "
+        "Use verified vedabase.io data where available as the authoritative source. "
+        "For unverified references, present the speaker's explanation only.\n"
     )
 
     return "".join(parts)

@@ -1,13 +1,17 @@
 """
-Transcriber Tool: Local speech-to-text via faster-whisper.
+Transcriber Tool: Local speech-to-text via faster-whisper or whisper.cpp.
 
-Uses CTranslate2-based Whisper for fast CPU/GPU inference.
+Supports two backends:
+- "faster-whisper" (default): CTranslate2-based, good GPU support via CUDA
+- "whisper.cpp": GGML-based, Apple Silicon Metal/CoreML acceleration
+
 Pure function + BaseTool wrapper pattern.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +32,8 @@ from lecture_agents.config.constants import (
 
 logger = logging.getLogger(__name__)
 
+WHISPER_BACKEND_DEFAULT = "faster-whisper"
+
 
 def transcribe_audio(
     audio_path: str,
@@ -37,12 +43,10 @@ def transcribe_audio(
     vad_filter: bool = WHISPER_VAD_FILTER,
     compute_type: str = WHISPER_COMPUTE_TYPE,
     initial_prompt: Optional[str] = None,
+    backend: str = WHISPER_BACKEND_DEFAULT,
 ) -> dict:
     """
-    Transcribe audio using local faster-whisper.
-
-    The initial_prompt parameter biases Whisper toward domain vocabulary
-    (Sanskrit terms, speaker names, scripture references).
+    Transcribe audio using a local Whisper backend.
 
     Args:
         audio_path: Path to WAV file (16kHz mono recommended).
@@ -50,8 +54,9 @@ def transcribe_audio(
         language: ISO 639-1 language code.
         beam_size: Beam search width.
         vad_filter: Enable Voice Activity Detection filter.
-        compute_type: CTranslate2 compute type (int8/float16/float32).
+        compute_type: CTranslate2 compute type (faster-whisper only).
         initial_prompt: Domain-specific prompt to improve recognition.
+        backend: "faster-whisper" or "whisper.cpp".
 
     Returns:
         dict with keys:
@@ -61,9 +66,38 @@ def transcribe_audio(
             model: model name used
             duration: total audio duration in seconds
     """
+    if backend == "whisper.cpp":
+        return _transcribe_whisper_cpp(
+            audio_path,
+            model_size=model_size,
+            language=language,
+            beam_size=beam_size,
+            initial_prompt=initial_prompt,
+        )
+    return _transcribe_faster_whisper(
+        audio_path,
+        model_size=model_size,
+        language=language,
+        beam_size=beam_size,
+        vad_filter=vad_filter,
+        compute_type=compute_type,
+        initial_prompt=initial_prompt,
+    )
+
+
+def _transcribe_faster_whisper(
+    audio_path: str,
+    model_size: str = WHISPER_MODEL_SIZE,
+    language: str = WHISPER_LANGUAGE,
+    beam_size: int = WHISPER_BEAM_SIZE,
+    vad_filter: bool = WHISPER_VAD_FILTER,
+    compute_type: str = WHISPER_COMPUTE_TYPE,
+    initial_prompt: Optional[str] = None,
+) -> dict:
+    """Transcribe using faster-whisper (CTranslate2 backend)."""
     from faster_whisper import WhisperModel
 
-    logger.info("Loading Whisper model: %s (compute: %s)", model_size, compute_type)
+    logger.info("Loading faster-whisper model: %s (compute: %s)", model_size, compute_type)
     model = WhisperModel(model_size, compute_type=compute_type)
 
     logger.info("Transcribing: %s", audio_path)
@@ -82,8 +116,6 @@ def transcribe_audio(
             "end": seg.end,
             "text": seg.text.strip(),
             "confidence": seg.avg_logprob,
-            # Convert log probability to a 0-1 confidence score
-            # avg_log_prob is negative; closer to 0 = more confident
         })
 
     duration = info.duration if hasattr(info, "duration") else (
@@ -104,6 +136,73 @@ def transcribe_audio(
     }
 
 
+def _transcribe_whisper_cpp(
+    audio_path: str,
+    model_size: str = WHISPER_MODEL_SIZE,
+    language: str = WHISPER_LANGUAGE,
+    beam_size: int = WHISPER_BEAM_SIZE,
+    initial_prompt: Optional[str] = None,
+) -> dict:
+    """Transcribe using whisper.cpp via pywhispercpp (Metal/CoreML on Apple Silicon)."""
+    from pywhispercpp.model import Model
+
+    model_name = model_size
+
+    # Number of threads: use available CPU cores, capped at 8
+    n_threads = min(os.cpu_count() or 4, 8)
+
+    logger.info(
+        "Loading whisper.cpp model: %s (threads: %d, beam_size: %d)",
+        model_name, n_threads, beam_size,
+    )
+    model = Model(
+        model_name,
+        n_threads=n_threads,
+        # Use beam search for more reliable long-form transcription
+        params_sampling_strategy=1,  # BEAM_SEARCH
+    )
+
+    logger.info("Transcribing with whisper.cpp: %s", audio_path)
+    segments_list = model.transcribe(
+        audio_path,
+        language=language,
+        initial_prompt=initial_prompt or "",
+        beam_search={"beam_size": beam_size, "patience": -1.0},
+        single_segment=False,
+    )
+
+    # pywhispercpp t0/t1 are in centiseconds (10ms units), divide by 100 for seconds
+    segments = []
+    for seg in segments_list:
+        start = seg.t0 / 100.0
+        end = seg.t1 / 100.0
+        text = seg.text.strip()
+        # Skip zero-duration or empty segments (whisper.cpp occasionally produces these)
+        if end <= start or not text:
+            continue
+        segments.append({
+            "start": start,
+            "end": end,
+            "text": text,
+            "confidence": None,
+        })
+
+    duration = segments[-1]["end"] if segments else 0
+
+    logger.info(
+        "whisper.cpp transcription complete: %d segments, %.1fs, language=%s",
+        len(segments), duration, language,
+    )
+
+    return {
+        "segments": segments,
+        "language": language,
+        "language_probability": 1.0,
+        "model": model_size,
+        "duration": duration,
+    }
+
+
 # ---------------------------------------------------------------------------
 # CrewAI BaseTool wrapper
 # ---------------------------------------------------------------------------
@@ -118,7 +217,7 @@ class WhisperTranscribeInput(BaseModel):
 class WhisperTranscribeTool(BaseTool):
     name: str = "transcribe_audio"
     description: str = (
-        "Transcribe audio to text using local faster-whisper. "
+        "Transcribe audio to text using local Whisper. "
         "Returns timestamped segments with confidence scores."
     )
     args_schema: type[BaseModel] = WhisperTranscribeInput

@@ -6,6 +6,11 @@ All magic numbers, vocabulary lists, and configuration defaults live here.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+# Project root: two levels up from this file (config/constants.py -> src/lecture_agents/config/)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
 # ---------------------------------------------------------------------------
 # Audio Normalization (Agent 1: Downloader)
 # ---------------------------------------------------------------------------
@@ -176,6 +181,37 @@ DOMAIN_VOCABULARY: list[str] = (
 )
 
 # ---------------------------------------------------------------------------
+# Whisper Hallucination Detection
+# ---------------------------------------------------------------------------
+
+HALLUCINATION_REPETITION_THRESHOLD: float = 0.5  # >50% same text = hallucination
+HALLUCINATION_PHRASE_THRESHOLD: float = 0.3       # >30% known phrases = hallucination
+HALLUCINATION_PHRASES: list[str] = [
+    "subtitles by the amara.org community",
+    "thanks for watching",
+    "thank you for watching",
+    "please subscribe",
+    "like and subscribe",
+    "the end",
+    "moroccanarabic",
+    "subcribe to my channel",
+    "subscribe to the channel",
+]
+
+# ---------------------------------------------------------------------------
+# Validation Agent Thresholds (Agent 3.5)
+# ---------------------------------------------------------------------------
+
+VALIDATION_MIN_WORDS_PER_MINUTE: float = 10.0
+VALIDATION_MAX_SEGMENT_GAP_SECONDS: float = 30.0
+VALIDATION_MIN_AVG_CONFIDENCE: float = 0.3
+VALIDATION_MIN_VERIFICATION_RATE: float = 0.5
+VALIDATION_SLIDING_WINDOW_SIZE: int = 50
+VALIDATION_SLIDING_REPETITION_THRESHOLD: float = 0.6
+VALIDATION_LANGUAGE_INCONSISTENCY_THRESHOLD: float = 0.2
+VALIDATION_MARKDOWN_REPEAT_THRESHOLD: int = 3
+
+# ---------------------------------------------------------------------------
 # Compiler Configuration (Agent 4)
 # ---------------------------------------------------------------------------
 
@@ -198,6 +234,7 @@ PDF_DEFAULT_FONT: str = "DejaVu"
 # Pipeline
 # ---------------------------------------------------------------------------
 
-PIPELINE_OUTPUT_DIR: str = "output"
+PIPELINE_OUTPUT_DIR: str = str(_PROJECT_ROOT / "output")
 PIPELINE_CACHE_DIR: str = "cache"
 CHECKPOINT_DIR_NAME: str = "checkpoints"
+JOB_METADATA_FILENAME: str = "job_meta.json"

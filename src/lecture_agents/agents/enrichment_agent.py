@@ -39,6 +39,12 @@ from lecture_agents.tools.enrichment_annotator import (
     build_thematic_index,
 )
 from lecture_agents.tools.vedabase_fetcher import VedabaseFetchTool, fetch_verse
+from lecture_agents.tools.mcp_verse_tools import (
+    mcp_fuzzy_match,
+    mcp_lookup_verse,
+    HAS_MCP,
+)
+from lecture_agents.config.lecture_prompt import LECTURE_CENTRIC_PROMPT_V7
 from lecture_agents.tools.llm_enrichment_generator import (
     LlmEnrichmentTool,
     generate_enriched_notes_llm,
@@ -56,6 +62,8 @@ def run_enrichment_pipeline(
     transcript: TranscriptOutput,
     cache_path: str = VEDABASE_CACHE_FILE,
     enable_llm: bool = True,
+    user_prompt: Optional[str] = None,
+    enrichment_mode: str = "auto",
 ) -> EnrichedNotes:
     """
     Run the enrichment pipeline.
@@ -65,12 +73,14 @@ def run_enrichment_pipeline(
     2. Verify each reference against vedabase.io (with caching)
     3. Build glossary from domain vocabulary
     4. Build thematic index
-    5. (Optional) LLM enrichment with Master Prompt v6.0
+    5. (Optional) LLM enrichment — auto-selects prompt based on mode
     6. Assemble EnrichedNotes
 
-    When enable_llm=True and verified verses exist, Step 5 generates
-    15-section enriched class notes using Claude with the verified
-    vedabase.io data as authoritative input.
+    When enable_llm=True, Step 5 generates enriched notes using Claude.
+    The prompt is selected based on enrichment_mode:
+    - "auto": lecture-centric (v7.0) if ≤2 verified verses, else verse-centric (v6.0)
+    - "lecture-centric": always use lecture-centric prompt (v7.0)
+    - "verse-centric": always use verse-centric prompt (v6.0)
 
     CRITICAL: Only verified references appear in the enriched output.
     Unverified references are tracked separately for manual review.
@@ -78,7 +88,9 @@ def run_enrichment_pipeline(
     Args:
         transcript: Output from Transcriber Agent.
         cache_path: Path to vedabase.io JSON cache.
-        enable_llm: Enable LLM for 15-section enriched notes generation.
+        enable_llm: Enable LLM enriched notes generation.
+        user_prompt: Custom instructions for LLM enrichment.
+        enrichment_mode: "auto", "verse-centric", or "lecture-centric".
 
     Returns:
         Validated EnrichedNotes.
@@ -134,6 +146,42 @@ def run_enrichment_pipeline(
     else:
         logger.info("Step 1b: Skipping LLM reference identification (enable_llm=False)")
 
+    # Step 1c: MCP fuzzy matching for detected slokas without references
+    if HAS_MCP:
+        existing_canonicals = {r["canonical_ref"] for r in raw_refs}
+        unmatched_slokas = [
+            s for s in transcript.detected_slokas
+            if not s.probable_reference or s.probable_reference not in existing_canonicals
+        ]
+        if unmatched_slokas:
+            logger.info(
+                "Step 1c: MCP fuzzy matching for %d unmatched slokas", len(unmatched_slokas)
+            )
+            for sloka in unmatched_slokas:
+                matches = mcp_fuzzy_match(sloka.text, top_n=1)
+                if matches and matches[0]["score"] >= 0.4:
+                    best = matches[0]
+                    ref_str = best["ref"]  # e.g. "BG 9.34"
+                    parts = ref_str.split()
+                    if len(parts) == 2 and "." in parts[1]:
+                        ch, vs = parts[1].split(".", 1)
+                        if ref_str not in existing_canonicals:
+                            raw_refs.append({
+                                "scripture": "BG",
+                                "chapter": ch,
+                                "verse": vs,
+                                "canonical_ref": ref_str,
+                                "segment_index": sloka.segment_index,
+                                "context_text": sloka.text[:100],
+                            })
+                            existing_canonicals.add(ref_str)
+                            logger.info(
+                                "    Fuzzy matched: '%s' -> %s (score: %.2f)",
+                                sloka.text[:60], ref_str, best["score"],
+                            )
+    else:
+        logger.info("Step 1c: Skipping MCP fuzzy matching (mcp SDK not available)")
+
     # Build Reference objects
     references: list[Reference] = []
     for ref_dict in raw_refs:
@@ -142,16 +190,27 @@ def run_enrichment_pipeline(
         except Exception as e:
             logger.warning("Skipping invalid reference %s: %s", ref_dict, e)
 
-    # Step 2: Verify each reference against vedabase.io
+    # Step 2: Verify each reference against vedabase.io (MCP for BG, direct for others)
     logger.info("Step 2: Verifying %d references against vedabase.io", len(references))
     verifications: list[VerificationResult] = []
     unverified: list[Reference] = []
 
     for ref in references:
         logger.info("  Verifying: %s", ref.canonical_ref)
-        fetch_result = fetch_verse(
-            ref.scripture, ref.chapter, ref.verse, cache_path=cache_path,
-        )
+
+        # Use MCP server for BG verses (has Prabhupada translation + purport + fuzzy cache)
+        # Fall back to direct vedabase_fetcher for BG if MCP fails, or for other scriptures
+        fetch_result = None
+        if HAS_MCP and ref.scripture.upper() == "BG":
+            mcp_result = mcp_lookup_verse(ref.canonical_ref)
+            if mcp_result.get("verified"):
+                fetch_result = mcp_result
+                logger.debug("    Using MCP result for %s", ref.canonical_ref)
+
+        if fetch_result is None:
+            fetch_result = fetch_verse(
+                ref.scripture, ref.chapter, ref.verse, cache_path=cache_path,
+            )
 
         if fetch_result.get("verified"):
             verifications.append(VerificationResult(
@@ -204,13 +263,11 @@ def run_enrichment_pipeline(
         scripture_focus=theme_dict.get("scripture_focus"),
     )
 
-    # Step 5: LLM enrichment (optional — Master Prompt v6.0)
+    # Step 5: LLM enrichment (optional — auto-selects prompt based on mode)
     enriched_markdown = None
     saranagathi_mapping = None
 
     if enable_llm:
-        logger.info("Step 5: Generating LLM-enhanced enriched notes (Master Prompt v6.0)")
-
         # Prepare verified verse data for LLM — only vedabase.io-sourced content
         verified_verse_data = []
         for v in verifications:
@@ -226,16 +283,43 @@ def run_enrichment_pipeline(
                     "cross_refs": v.cross_refs_in_purport,
                 })
 
+        # Select prompt based on enrichment_mode
+        verified_count = len(verified_verse_data)
+        if enrichment_mode == "auto":
+            use_lecture_centric = verified_count <= 2
+        elif enrichment_mode == "lecture-centric":
+            use_lecture_centric = True
+        else:  # "verse-centric"
+            use_lecture_centric = False
+
+        if use_lecture_centric:
+            from lecture_agents.config.enrichment_prompt import ENRICHMENT_MASTER_PROMPT_V6  # noqa: F811
+            prompt_to_use = LECTURE_CENTRIC_PROMPT_V7
+            mode_label = "lecture-centric v7.0"
+        else:
+            from lecture_agents.config.enrichment_prompt import ENRICHMENT_MASTER_PROMPT_V6
+            prompt_to_use = ENRICHMENT_MASTER_PROMPT_V6
+            mode_label = "verse-centric v6.0"
+
+        logger.info(
+            "Step 5: Generating LLM-enhanced enriched notes (%s, %d verified verses)",
+            mode_label,
+            verified_count,
+        )
+
         llm_result = generate_enriched_notes_llm(
             transcript_text=text,
             verified_verses=verified_verse_data,
+            master_prompt=prompt_to_use,
+            user_prompt=user_prompt,
         )
 
         if llm_result.get("enriched_markdown"):
             enriched_markdown = llm_result["enriched_markdown"]
             saranagathi_mapping = llm_result.get("saranagathi_mapping")
             logger.info(
-                "LLM enrichment complete: %d verses processed, %d chars output",
+                "LLM enrichment complete (%s): %d verses processed, %d chars output",
+                mode_label,
                 llm_result.get("verses_processed", 0),
                 len(enriched_markdown),
             )

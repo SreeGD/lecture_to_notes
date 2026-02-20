@@ -87,6 +87,10 @@ class EnrichmentError(LectureBookException):
     """Raised when scripture enrichment fails."""
 
 
+class ValidationError(LectureBookException):
+    """Raised when validation checks detect quality issues."""
+
+
 class CompilationError(LectureBookException):
     """Raised when book compilation fails."""
 

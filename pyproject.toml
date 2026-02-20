@@ -25,8 +25,15 @@ crewai = [
 llm = [
     "anthropic>=0.39",
 ]
+mcp = [
+    "mcp[cli]>=1.2.0",
+]
 pdf = [
     "fpdf2>=2.8",
+]
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
 ]
 
 [tool.pytest.ini_options]
@@ -39,4 +46,5 @@ markers = [
     "llm: Tests that call real LLM",
     "integration: Cross-agent integration tests",
     "slow: Tests requiring audio download/transcription",
+    "api: API endpoint tests (no LLM, no I/O)",
 ]

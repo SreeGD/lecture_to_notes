@@ -18,6 +18,7 @@ from lecture_agents.schemas.compiler_output import BookOutput
 from lecture_agents.schemas.download_output import DownloadManifest
 from lecture_agents.schemas.enrichment_output import EnrichedNotes
 from lecture_agents.schemas.transcript_output import TranscriptOutput
+from lecture_agents.schemas.validation_output import ValidationReport
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,16 @@ def save_enriched_checkpoint(
     """Save EnrichedNotes to checkpoints/url_NNN_enriched.json."""
     path = _checkpoint_dir(output_dir) / f"url_{order:03d}_enriched.json"
     path.write_text(enriched.model_dump_json(indent=2))
+    logger.info("Checkpoint saved: %s", path)
+    return path
+
+
+def save_validation_checkpoint(
+    report: ValidationReport, output_dir: str, order: int
+) -> Path:
+    """Save ValidationReport to checkpoints/url_NNN_validation.json."""
+    path = _checkpoint_dir(output_dir) / f"url_{order:03d}_validation.json"
+    path.write_text(report.model_dump_json(indent=2))
     logger.info("Checkpoint saved: %s", path)
     return path
 
@@ -109,6 +120,21 @@ def load_enriched_checkpoint(output_dir: str, order: int) -> EnrichedNotes:
     enriched = EnrichedNotes.model_validate_json(path.read_text())
     logger.info("Checkpoint loaded: %s (%d refs)", path, len(enriched.references_found))
     return enriched
+
+
+def load_validation_checkpoint(output_dir: str, order: int) -> ValidationReport:
+    """Load ValidationReport from checkpoints/url_NNN_validation.json."""
+    path = Path(output_dir) / CHECKPOINT_DIR_NAME / f"url_{order:03d}_validation.json"
+    if not path.exists():
+        raise PipelineError(
+            f"Cannot load validation checkpoint: file not found at {path}"
+        )
+    report = ValidationReport.model_validate_json(path.read_text())
+    logger.info(
+        "Checkpoint loaded: %s (%d critical, %d warnings)",
+        path, report.critical_failures, report.warnings,
+    )
+    return report
 
 
 def load_book_checkpoint(output_dir: str) -> BookOutput:

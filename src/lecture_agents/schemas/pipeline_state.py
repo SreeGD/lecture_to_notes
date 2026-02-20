@@ -24,6 +24,8 @@ class URLStatus(Enum):
     TRANSCRIBED = "transcribed"
     ENRICHING = "enriching"
     ENRICHED = "enriched"
+    VALIDATING = "validating"
+    VALIDATED = "validated"
     COMPILING = "compiling"
     COMPILED = "compiled"
     PDF_GENERATING = "pdf_generating"
@@ -33,7 +35,7 @@ class URLStatus(Enum):
 
 _PAST_DOWNLOAD = {"downloaded", "transcribed", "enriched", "compiled", "pdf_generated"}
 _PAST_TRANSCRIBE = {"transcribed", "enriched", "compiled", "pdf_generated"}
-_PAST_ENRICH = {"enriched", "compiled", "pdf_generated"}
+_PAST_ENRICH = {"enriched", "validated", "compiled", "pdf_generated"}
 
 
 @dataclass

@@ -49,6 +49,10 @@ cache/vedabase_cache.json
 # Whisper models
 models/
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
 # pytest
 .pytest_cache/
 htmlcov/

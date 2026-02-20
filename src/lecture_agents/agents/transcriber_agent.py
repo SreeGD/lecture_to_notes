@@ -9,6 +9,7 @@ and Sanskrit/Bengali term preservation using local faster-whisper.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +21,13 @@ except ImportError:
     Agent = None  # type: ignore[assignment,misc]
     Task = None   # type: ignore[assignment,misc]
 
-from lecture_agents.config.constants import WHISPER_MODEL_SIZE, WHISPER_VAD_FILTER
+from lecture_agents.config.constants import (
+    HALLUCINATION_PHRASE_THRESHOLD,
+    HALLUCINATION_PHRASES,
+    HALLUCINATION_REPETITION_THRESHOLD,
+    WHISPER_MODEL_SIZE,
+    WHISPER_VAD_FILTER,
+)
 from lecture_agents.exceptions import DiarizationError, TranscriptionError
 from lecture_agents.schemas.transcript_output import (
     DetectedSloka,
@@ -51,6 +58,40 @@ from lecture_agents.tools.whisper_transcriber import (
 logger = logging.getLogger(__name__)
 
 
+def _check_hallucination(segments: list[dict]) -> None:
+    """Detect Whisper hallucination loops and raise if detected."""
+    if len(segments) < 10:
+        return
+
+    texts = [s["text"].strip() for s in segments if s.get("text")]
+    if not texts:
+        return
+
+    # Check 1: Repetition ratio — same text dominates output
+    counts = Counter(texts)
+    most_common_text, most_common_count = counts.most_common(1)[0]
+    repetition_ratio = most_common_count / len(texts)
+    if repetition_ratio > HALLUCINATION_REPETITION_THRESHOLD:
+        raise TranscriptionError(
+            f"Hallucination detected: '{most_common_text[:60]}' repeated in "
+            f"{most_common_count}/{len(texts)} segments ({repetition_ratio:.0%}). "
+            f"Try a different Whisper backend, smaller model, or add an initial prompt."
+        )
+
+    # Check 2: Known hallucination phrases
+    hallucination_count = sum(
+        1 for t in texts
+        if any(phrase in t.lower() for phrase in HALLUCINATION_PHRASES)
+    )
+    phrase_ratio = hallucination_count / len(texts)
+    if phrase_ratio > HALLUCINATION_PHRASE_THRESHOLD:
+        raise TranscriptionError(
+            f"Hallucination detected: {hallucination_count}/{len(texts)} segments "
+            f"({phrase_ratio:.0%}) contain known Whisper hallucination phrases. "
+            f"Try a different Whisper backend, smaller model, or add an initial prompt."
+        )
+
+
 def run_transcription_pipeline(
     audio_path: str,
     model_size: str = WHISPER_MODEL_SIZE,
@@ -58,13 +99,14 @@ def run_transcription_pipeline(
     enable_llm_postprocess: bool = True,
     speaker_name: Optional[str] = None,
     vad_filter: bool = WHISPER_VAD_FILTER,
+    whisper_backend: str = "faster-whisper",
 ) -> TranscriptOutput:
     """
     Run the deterministic transcription pipeline.
 
     Steps:
     1. Build domain vocabulary prompt for Whisper
-    2. Transcribe audio with faster-whisper (using initial_prompt)
+    2. Transcribe audio with Whisper (using initial_prompt)
     3. Optionally run speaker diarization and merge labels
     4. Apply regex-based domain vocabulary corrections
     5. Optionally run LLM post-processing for deeper cleanup
@@ -76,6 +118,7 @@ def run_transcription_pipeline(
         enable_diarization: Enable speaker diarization (requires pyannote.audio).
         enable_llm_postprocess: Enable LLM-based post-processing.
         speaker_name: Speaker's name for prompt and labels.
+        whisper_backend: "faster-whisper" or "whisper.cpp".
 
     Returns:
         Validated TranscriptOutput.
@@ -88,12 +131,13 @@ def run_transcription_pipeline(
     initial_prompt = build_whisper_prompt(speaker_name=speaker_name)
 
     # Step 2: Transcribe with Whisper
-    logger.info("Step 2: Transcribing with faster-whisper (%s)", model_size)
+    logger.info("Step 2: Transcribing with %s (%s)", whisper_backend, model_size)
     whisper_result = transcribe_audio(
         audio_path,
         model_size=model_size,
         initial_prompt=initial_prompt,
         vad_filter=vad_filter,
+        backend=whisper_backend,
     )
 
     raw_segments = whisper_result["segments"]
@@ -186,6 +230,8 @@ def run_transcription_pipeline(
 
     if not segments:
         raise TranscriptionError("No valid segments after processing")
+
+    _check_hallucination(raw_segments)
 
     word_count = len(corrected_text.split())
     summary = (
