@@ -189,6 +189,9 @@ def _build_enrichment_context(
     The message is structured so the LLM can find verified data easily
     and use it as the authoritative source for enrichment. The LLM must
     use ONLY this data for translations, purports, and Sanskrit text.
+
+    When verses span multiple scriptures (3+ verses from 2+ scriptures),
+    they are grouped by scripture type for better organization.
     """
     parts: list[str] = []
 
@@ -197,35 +200,42 @@ def _build_enrichment_context(
     parts.append("\n\n---\n\n")
 
     if verified_verses:
-        parts.append("## Verified Verses from Vedabase.io\n\n")
-        parts.append(
-            "The following verses have been verified against vedabase.io. "
-            "Use ONLY this data for translations, purports, and Sanskrit text. "
-            "Do NOT generate scripture content from memory or training data.\n\n"
-        )
-
+        # Determine if we should group by scripture
+        scripture_types = set()
         for v in verified_verses:
-            ref = v.get("canonical_ref", "Unknown")
-            parts.append(f"### {ref}\n\n")
+            canonical = v.get("canonical_ref", "")
+            sp = canonical.split()
+            if sp:
+                scripture_types.add(sp[0])
 
-            if v.get("vedabase_url"):
-                parts.append(f"**Vedabase URL:** {v['vedabase_url']}\n\n")
-            if v.get("devanagari"):
-                parts.append(f"**Devanagari:**\n{v['devanagari']}\n\n")
-            if v.get("verse_text"):
-                parts.append(f"**IAST Transliteration:**\n{v['verse_text']}\n\n")
-            if v.get("synonyms"):
-                parts.append(f"**Synonyms:**\n{v['synonyms']}\n\n")
-            if v.get("translation"):
-                parts.append(f"**Translation:**\n{v['translation']}\n\n")
-            if v.get("purport_excerpt"):
-                parts.append(f"**Purport (excerpt):**\n{v['purport_excerpt']}\n\n")
-            if v.get("cross_refs"):
-                parts.append(
-                    f"**Cross-references in purport:** {', '.join(v['cross_refs'])}\n\n"
-                )
+        use_grouping = len(verified_verses) >= 3 and len(scripture_types) >= 2
 
-            parts.append("---\n\n")
+        if use_grouping:
+            from lecture_agents.tools.transcript_chunker import group_verses_by_scripture
+            grouped = group_verses_by_scripture(verified_verses)
+
+            parts.append("## Verified Verses from Vedabase.io\n\n")
+            parts.append(
+                "The following verses have been verified against vedabase.io, "
+                "grouped by scripture. Use ONLY this data for translations, "
+                "purports, and Sanskrit text. Do NOT generate scripture content "
+                "from memory or training data.\n\n"
+            )
+
+            for scripture, verses in grouped.items():
+                display_name = _SCRIPTURE_DISPLAY_NAMES.get(scripture, scripture)
+                parts.append(f"### {display_name} References\n\n")
+                for v in verses:
+                    _append_verse_block(parts, v)
+        else:
+            parts.append("## Verified Verses from Vedabase.io\n\n")
+            parts.append(
+                "The following verses have been verified against vedabase.io. "
+                "Use ONLY this data for translations, purports, and Sanskrit text. "
+                "Do NOT generate scripture content from memory or training data.\n\n"
+            )
+            for v in verified_verses:
+                _append_verse_block(parts, v)
     else:
         parts.append("## Note on Verse References\n\n")
         parts.append(
@@ -243,6 +253,42 @@ def _build_enrichment_context(
     )
 
     return "".join(parts)
+
+
+# Scripture display names for grouped verse context
+_SCRIPTURE_DISPLAY_NAMES = {
+    "BG": "Bhagavad-gita",
+    "SB": "Srimad-Bhagavatam",
+    "CC": "Caitanya-caritamrita",
+    "NOI": "Nectar of Instruction",
+    "ISO": "Sri Isopanisad",
+    "BS": "Brahma-samhita",
+}
+
+
+def _append_verse_block(parts: list[str], v: dict) -> None:
+    """Append a single verse's data block to the parts list."""
+    ref = v.get("canonical_ref", "Unknown")
+    parts.append(f"#### {ref}\n\n")
+
+    if v.get("vedabase_url"):
+        parts.append(f"**Vedabase URL:** {v['vedabase_url']}\n\n")
+    if v.get("devanagari"):
+        parts.append(f"**Devanagari:**\n{v['devanagari']}\n\n")
+    if v.get("verse_text"):
+        parts.append(f"**IAST Transliteration:**\n{v['verse_text']}\n\n")
+    if v.get("synonyms"):
+        parts.append(f"**Synonyms:**\n{v['synonyms']}\n\n")
+    if v.get("translation"):
+        parts.append(f"**Translation:**\n{v['translation']}\n\n")
+    if v.get("purport_excerpt"):
+        parts.append(f"**Purport (excerpt):**\n{v['purport_excerpt']}\n\n")
+    if v.get("cross_refs"):
+        parts.append(
+            f"**Cross-references in purport:** {', '.join(v['cross_refs'])}\n\n"
+        )
+
+    parts.append("---\n\n")
 
 
 def _extract_saranagathi_mapping(markdown: str) -> Optional[dict]:
@@ -297,6 +343,276 @@ def _extract_saranagathi_mapping(markdown: str) -> Optional[dict]:
         mapping[letter] = list(dict.fromkeys(mapping[letter]))
 
     return mapping if mapping else None
+
+
+# ---------------------------------------------------------------------------
+# Chunked LLM enrichment — processes long transcripts in segments
+# ---------------------------------------------------------------------------
+
+
+def generate_enriched_notes_chunked(
+    chunks: list,
+    master_prompt: str = ENRICHMENT_MASTER_PROMPT_V6,
+    model: str = "claude-sonnet-4-5-20250929",
+    max_tokens_per_chunk: int = 16384,
+    user_prompt: Optional[str] = None,
+) -> dict:
+    """
+    Generate enriched notes by processing each chunk independently, then merging.
+
+    For each chunk:
+    1. Build chunk-specific context with its transcript text and relevant verses
+    2. Call Claude with the master prompt
+    3. Collect the enriched markdown
+
+    After all chunks:
+    4. Merge chunk outputs into a single coherent document
+
+    Args:
+        chunks: List of TranscriptChunk objects from chunk_transcript_by_purpose().
+        master_prompt: System prompt for the LLM.
+        model: Claude model to use.
+        max_tokens_per_chunk: Max output tokens per chunk.
+        user_prompt: Optional custom instructions.
+
+    Returns:
+        dict with same keys as generate_enriched_notes_llm() plus
+        chunks_processed and chunks_failed.
+    """
+    if not HAS_ANTHROPIC:
+        return {
+            "enriched_markdown": None,
+            "saranagathi_mapping": None,
+            "verses_processed": 0,
+            "truncated": False,
+            "error": "anthropic SDK not installed",
+        }
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {
+            "enriched_markdown": None,
+            "saranagathi_mapping": None,
+            "verses_processed": 0,
+            "truncated": False,
+            "error": "ANTHROPIC_API_KEY not set",
+        }
+
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        timeout=httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=600.0),
+        max_retries=2,
+    )
+
+    total_chunks = len(chunks)
+    chunk_markdowns: list[tuple[int, str]] = []
+    chunks_failed: list[int] = []
+    total_verses = 0
+
+    for chunk in chunks:
+        chunk_idx = chunk.chunk_index
+        logger.info(
+            "Processing chunk %d/%d (~%d tokens, %d verses, %.0f-%.0fs)",
+            chunk_idx + 1, total_chunks, chunk.estimated_tokens,
+            len(chunk.verified_verses), chunk.start_time, chunk.end_time,
+        )
+
+        # Build chunk-specific context
+        user_message = _build_chunk_enrichment_context(
+            chunk_text=chunk.text,
+            chunk_verses=chunk.verified_verses,
+            chunk_index=chunk_idx,
+            total_chunks=total_chunks,
+            start_time=chunk.start_time,
+            end_time=chunk.end_time,
+        )
+
+        if user_prompt:
+            user_message += (
+                "\n\n## Additional Instructions from User\n\n"
+                f"{user_prompt}\n"
+            )
+
+        try:
+            text_chunks: list[str] = []
+            with client.messages.stream(
+                model=model,
+                max_tokens=max_tokens_per_chunk,
+                system=master_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            ) as stream:
+                for text in stream.text_stream:
+                    text_chunks.append(text)
+
+            markdown = "".join(text_chunks).strip()
+            if markdown:
+                chunk_markdowns.append((chunk_idx, markdown))
+                total_verses += len(chunk.verified_verses)
+                logger.info(
+                    "Chunk %d/%d complete: %d chars",
+                    chunk_idx + 1, total_chunks, len(markdown),
+                )
+            else:
+                chunks_failed.append(chunk_idx)
+                logger.warning("Chunk %d/%d returned empty output", chunk_idx + 1, total_chunks)
+
+        except Exception as e:
+            chunks_failed.append(chunk_idx)
+            logger.error("Chunk %d/%d failed: %s", chunk_idx + 1, total_chunks, e)
+
+    # Merge all chunk outputs
+    if not chunk_markdowns:
+        return {
+            "enriched_markdown": None,
+            "saranagathi_mapping": None,
+            "verses_processed": 0,
+            "truncated": False,
+            "error": f"All {total_chunks} chunks failed",
+            "chunks_processed": 0,
+            "chunks_failed": chunks_failed,
+        }
+
+    merged = _merge_chunk_outputs(chunk_markdowns, total_chunks, chunks_failed)
+    saranagathi = _extract_saranagathi_mapping(merged)
+
+    logger.info(
+        "Chunked enrichment complete: %d/%d chunks succeeded, %d chars merged",
+        len(chunk_markdowns), total_chunks, len(merged),
+    )
+
+    return {
+        "enriched_markdown": merged,
+        "saranagathi_mapping": saranagathi,
+        "verses_processed": total_verses,
+        "truncated": False,
+        "error": None,
+        "chunks_processed": len(chunk_markdowns),
+        "chunks_failed": chunks_failed,
+    }
+
+
+def _build_chunk_enrichment_context(
+    chunk_text: str,
+    chunk_verses: list[dict],
+    chunk_index: int,
+    total_chunks: int,
+    start_time: float,
+    end_time: float,
+) -> str:
+    """
+    Build user message for a single chunk's LLM enrichment call.
+
+    Adds chunk context (section N of M, time range) and groups
+    verses by scripture within the chunk.
+    """
+    def _fmt_time(seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    parts: list[str] = []
+
+    parts.append("## Context\n\n")
+    parts.append(
+        f"This is section {chunk_index + 1} of {total_chunks} "
+        f"from a lecture transcript.\n"
+        f"Time range: {_fmt_time(start_time)} — {_fmt_time(end_time)}\n\n"
+    )
+
+    parts.append(f"## Lecture Transcript (Section {chunk_index + 1})\n\n")
+    parts.append(chunk_text)
+    parts.append("\n\n---\n\n")
+
+    if chunk_verses:
+        parts.append("## Verified Verses from Vedabase.io\n\n")
+        parts.append(
+            "Use ONLY this data for translations, purports, and Sanskrit text. "
+            "Do NOT generate scripture content from memory or training data.\n\n"
+        )
+        for v in chunk_verses:
+            _append_verse_block(parts, v)
+    else:
+        parts.append("## Note on Verse References\n\n")
+        parts.append(
+            "No verified verse data is available for this section. "
+            "Identify verses discussed by the speaker from context and mark them as "
+            "[From Lecture — Verify Against Vedabase.io].\n\n"
+        )
+
+    parts.append("## Instructions\n\n")
+    parts.append(
+        "Generate structured lecture notes for this section following the "
+        "system prompt format. Use verified vedabase.io data where available. "
+        "For unverified references, present the speaker's explanation only.\n"
+    )
+
+    return "".join(parts)
+
+
+def _merge_chunk_outputs(
+    chunk_markdowns: list[tuple[int, str]],
+    total_chunks: int,
+    failed_chunks: list[int],
+) -> str:
+    """
+    Merge enriched markdown outputs from multiple chunks into a cohesive document.
+
+    Strategy:
+    - First chunk's output is used as-is (has document header)
+    - Subsequent chunks: strip duplicate preamble headers
+    - Insert section dividers between chunks
+    - Insert placeholders for failed chunks
+    """
+    # Sort by chunk index
+    sorted_chunks = sorted(chunk_markdowns, key=lambda x: x[0])
+
+    if len(sorted_chunks) == 1 and not failed_chunks:
+        return sorted_chunks[0][1]
+
+    parts: list[str] = []
+
+    # Track which indices we have
+    present = {idx for idx, _ in sorted_chunks}
+    chunk_map = {idx: md for idx, md in sorted_chunks}
+
+    for i in range(total_chunks):
+        if i in chunk_map:
+            markdown = chunk_map[i]
+
+            if i == 0:
+                # First chunk: use as-is
+                parts.append(markdown)
+            else:
+                # Subsequent chunks: strip duplicate headers
+                cleaned = _strip_duplicate_header(markdown)
+                parts.append(f"\n\n---\n\n## Continued: Section {i + 1}\n\n")
+                parts.append(cleaned)
+        elif i in failed_chunks:
+            parts.append(
+                f"\n\n---\n\n> **[Section {i + 1}]:** "
+                f"This portion could not be processed.\n\n"
+            )
+
+    return "".join(parts)
+
+
+def _strip_duplicate_header(markdown: str) -> str:
+    """Strip duplicate preamble from subsequent chunk outputs."""
+    lines = markdown.split("\n")
+    # Look for common preamble patterns to skip
+    skip_patterns = [
+        "all glories to",
+        "# lecture notes",
+        "# all glories",
+        "## version",
+    ]
+    start_idx = 0
+    for i, line in enumerate(lines[:10]):  # Only check first 10 lines
+        lower = line.strip().lower()
+        if any(p in lower for p in skip_patterns):
+            start_idx = i + 1
+
+    return "\n".join(lines[start_idx:]).lstrip("\n")
 
 
 # ---------------------------------------------------------------------------

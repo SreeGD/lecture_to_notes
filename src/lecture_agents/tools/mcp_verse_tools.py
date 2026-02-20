@@ -189,6 +189,94 @@ def mcp_seed_database() -> str:
         return f"Error: {e}"
 
 
+def mcp_batch_lookup_verses(references: list[str]) -> list[dict]:
+    """
+    Look up multiple BG verses in a single MCP session.
+
+    Uses _call_tools_batch() to open one connection and issue all lookups
+    sequentially within that session, instead of N separate connections.
+
+    Args:
+        references: List of canonical reference strings (e.g., ["BG 2.47", "BG 9.34"]).
+
+    Returns:
+        List of result dicts (same format as mcp_lookup_verse), in the same
+        order as the input references. Failed lookups return error dicts.
+    """
+    if not references:
+        return []
+
+    if not HAS_MCP:
+        return [
+            {
+                "url": None,
+                "verified": False,
+                "fetch_source": "not_found",
+                "error": "mcp SDK not installed. pip install mcp[cli]",
+            }
+            for _ in references
+        ]
+
+    try:
+        calls = [("lookup_verse", {"reference": ref}) for ref in references]
+        raw_results = _run_async(_call_tools_batch(calls))
+
+        parsed: list[dict] = []
+        for ref, text in zip(references, raw_results):
+            if text.startswith("Error:"):
+                parsed.append({
+                    "url": None,
+                    "verified": False,
+                    "fetch_source": "not_found",
+                    "error": text,
+                })
+            else:
+                parsed.append(_parse_mcp_verse_response(text, ref))
+        return parsed
+
+    except Exception as e:
+        logger.error("MCP batch lookup failed: %s", e)
+        return [
+            {
+                "url": None,
+                "verified": False,
+                "fetch_source": "not_found",
+                "error": str(e),
+            }
+            for _ in references
+        ]
+
+
+def mcp_batch_fuzzy_match(slokas: list[str], top_n: int = 1) -> list[list[dict]]:
+    """
+    Fuzzy-match multiple garbled Sanskrit strings in a single MCP session.
+
+    Args:
+        slokas: List of garbled Sanskrit text strings.
+        top_n: Number of top matches per sloka.
+
+    Returns:
+        List of match lists, one per input sloka.
+    """
+    if not slokas:
+        return []
+
+    if not HAS_MCP:
+        return [[] for _ in slokas]
+
+    try:
+        calls = [
+            ("fuzzy_match_verse", {"garbled_sanskrit": s, "top_n": top_n})
+            for s in slokas
+        ]
+        raw_results = _run_async(_call_tools_batch(calls))
+        return [_parse_fuzzy_response(text) for text in raw_results]
+
+    except Exception as e:
+        logger.error("MCP batch fuzzy match failed: %s", e)
+        return [[] for _ in slokas]
+
+
 def mcp_is_available() -> bool:
     """Check if the MCP SDK is installed and the server is reachable."""
     if not HAS_MCP:

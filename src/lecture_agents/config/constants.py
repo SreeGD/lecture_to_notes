@@ -231,6 +231,15 @@ PDF_MARGIN_MM: int = 18
 PDF_DEFAULT_FONT: str = "DejaVu"
 
 # ---------------------------------------------------------------------------
+# Chunked Enrichment Configuration
+# ---------------------------------------------------------------------------
+
+CHUNK_ACTIVATION_THRESHOLD_TOKENS: int = 30_000  # Only chunk above this (~23k words)
+CHUNK_MIN_TOKENS: int = 5_000                     # Minimum tokens per chunk
+CHUNK_MAX_TOKENS: int = 40_000                    # Maximum tokens per chunk
+CHUNK_GAP_THRESHOLD_SECONDS: float = 5.0          # Temporal gap for break detection
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 

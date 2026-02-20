@@ -68,6 +68,31 @@ def _mock_fetch_verse(scripture, chapter, verse, **kwargs):
         }
 
 
+def _mock_batch_fetch_verses(references, **kwargs):
+    """Mock batch vedabase fetch that returns test data for each reference."""
+    results = []
+    for ref in references:
+        results.append(_mock_fetch_verse(
+            ref.get("scripture", ""),
+            ref.get("chapter", ""),
+            ref.get("verse", ""),
+        ))
+    return results
+
+
+def _mock_batch_fetch_unverified(references, **kwargs):
+    """Mock batch vedabase fetch that returns all unverified."""
+    return [
+        {
+            "url": None,
+            "verified": False,
+            "fetch_source": "not_found",
+            "error": "Not found",
+        }
+        for _ in references
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Pipeline tests
 # ---------------------------------------------------------------------------
@@ -76,7 +101,7 @@ def _mock_fetch_verse(scripture, chapter, verse, **kwargs):
 @pytest.mark.pipeline
 class TestRunEnrichmentPipeline:
 
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse", side_effect=_mock_fetch_verse)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_verses)
     def test_pipeline_produces_valid_output(self, mock_fetch):
         transcript = _make_transcript()
         result = run_enrichment_pipeline(transcript, enable_llm=False)
@@ -85,7 +110,7 @@ class TestRunEnrichmentPipeline:
         assert len(result.verifications) >= 1
         assert result.verification_rate > 0
 
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse", side_effect=_mock_fetch_verse)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_verses)
     def test_pipeline_identifies_bg_reference(self, mock_fetch):
         transcript = _make_transcript()
         result = run_enrichment_pipeline(transcript, enable_llm=False)
@@ -94,7 +119,7 @@ class TestRunEnrichmentPipeline:
         assert len(bg_refs) >= 1
         assert bg_refs[0].canonical_ref == "BG 2.47"
 
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse", side_effect=_mock_fetch_verse)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_verses)
     def test_pipeline_verifies_against_vedabase(self, mock_fetch):
         transcript = _make_transcript()
         result = run_enrichment_pipeline(transcript, enable_llm=False)
@@ -106,14 +131,9 @@ class TestRunEnrichmentPipeline:
             assert v.translation is not None
             assert v.vedabase_url is not None
 
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse")
+    @patch("lecture_agents.agents.enrichment_agent.HAS_MCP", False)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_unverified)
     def test_pipeline_handles_unverified_refs(self, mock_fetch):
-        mock_fetch.return_value = {
-            "url": None,
-            "verified": False,
-            "fetch_source": "not_found",
-            "error": "Not found",
-        }
         transcript = _make_transcript()
         result = run_enrichment_pipeline(transcript, enable_llm=False)
 
@@ -122,7 +142,7 @@ class TestRunEnrichmentPipeline:
         assert len(result.verifications) == 0
         assert result.verification_rate == 0.0
 
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse", side_effect=_mock_fetch_verse)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_verses)
     def test_pipeline_builds_glossary(self, mock_fetch):
         transcript = _make_transcript()
         result = run_enrichment_pipeline(transcript, enable_llm=False)
@@ -132,7 +152,7 @@ class TestRunEnrichmentPipeline:
         # bhakti and dharma are in the transcript text
         assert "bhakti" in terms or "dharma" in terms
 
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse", side_effect=_mock_fetch_verse)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_verses)
     def test_pipeline_builds_thematic_index(self, mock_fetch):
         transcript = _make_transcript()
         result = run_enrichment_pipeline(transcript, enable_llm=False)
@@ -158,7 +178,7 @@ class TestRunEnrichmentPipeline:
 class TestLlmReferenceIdentification:
 
     @patch("lecture_agents.agents.enrichment_agent.identify_references_llm")
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse", side_effect=_mock_fetch_verse)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_verses)
     def test_llm_identification_called_when_enabled(self, mock_fetch, mock_llm_id):
         """When enable_llm=True, LLM reference identification is called."""
         mock_llm_id.return_value = []
@@ -167,7 +187,7 @@ class TestLlmReferenceIdentification:
         mock_llm_id.assert_called_once()
 
     @patch("lecture_agents.agents.enrichment_agent.identify_references_llm")
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse", side_effect=_mock_fetch_verse)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_verses)
     def test_llm_identification_not_called_when_disabled(self, mock_fetch, mock_llm_id):
         """When enable_llm=False, LLM reference identification is NOT called."""
         transcript = _make_transcript()
@@ -175,7 +195,7 @@ class TestLlmReferenceIdentification:
         mock_llm_id.assert_not_called()
 
     @patch("lecture_agents.agents.enrichment_agent.identify_references_llm")
-    @patch("lecture_agents.agents.enrichment_agent.fetch_verse", side_effect=_mock_fetch_verse)
+    @patch("lecture_agents.agents.enrichment_agent.batch_fetch_verses", side_effect=_mock_batch_fetch_verses)
     def test_llm_refs_merged_and_verified(self, mock_fetch, mock_llm_id):
         """LLM-found references get merged and sent to vedabase verification."""
         mock_llm_id.return_value = [{

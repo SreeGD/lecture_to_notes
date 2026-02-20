@@ -339,6 +339,135 @@ def fetch_verse(
         }
 
 
+def batch_fetch_verses(
+    references: list[dict],
+    cache_path: str = VEDABASE_CACHE_FILE,
+) -> list[dict]:
+    """
+    Fetch multiple verses from vedabase.io with batched cache reads/writes.
+
+    Optimization over calling fetch_verse() in a loop:
+    1. Load cache once
+    2. Separate cache hits from cache misses
+    3. Fetch all misses sequentially (with rate limiting)
+    4. Save cache once at the end
+
+    Args:
+        references: List of dicts with keys: scripture, chapter, verse.
+        cache_path: Path to vedabase cache JSON file.
+
+    Returns:
+        List of result dicts in the same order as input references.
+    """
+    if not references:
+        return []
+
+    cache = _load_cache(cache_path)
+    results: list[dict] = [None] * len(references)  # type: ignore[list-item]
+    misses: list[tuple[int, dict]] = []  # (index, ref_dict) for cache misses
+
+    # Pass 1: check cache
+    for i, ref in enumerate(references):
+        scripture = ref.get("scripture", "")
+        chapter = ref.get("chapter", "")
+        verse = ref.get("verse", "")
+        key = _cache_key(scripture, chapter, verse)
+
+        if key in cache:
+            logger.debug("Batch cache hit: %s", key)
+            results[i] = {**cache[key], "fetch_source": "cache"}
+        else:
+            misses.append((i, ref))
+
+    # Pass 2: fetch misses from vedabase.io
+    cache_modified = False
+    for idx, ref in misses:
+        scripture = ref.get("scripture", "")
+        chapter = ref.get("chapter", "")
+        verse = ref.get("verse", "")
+
+        url = build_vedabase_url(scripture, chapter, verse)
+        if not url:
+            results[idx] = {
+                "url": None,
+                "verified": False,
+                "fetch_source": "not_found",
+                "error": f"Unknown scripture abbreviation: {scripture}",
+            }
+            continue
+
+        try:
+            logger.info("Batch fetching from vedabase.io: %s", url)
+            response = httpx.get(
+                url,
+                timeout=VEDABASE_TIMEOUT,
+                follow_redirects=True,
+                headers={"User-Agent": "LectureToBook/1.0 (vedabase-reference-tool)"},
+            )
+
+            if response.status_code == 200:
+                content = _parse_vedabase_page(response.text)
+                has_translation = bool(content.get("translation"))
+                result = {
+                    "url": url,
+                    "verified": has_translation,
+                    "devanagari": content.get("devanagari"),
+                    "verse_text": content.get("verse_text"),
+                    "synonyms": content.get("synonyms"),
+                    "translation": content.get("translation"),
+                    "purport_excerpt": content.get("purport_excerpt"),
+                    "cross_refs_in_purport": content.get("cross_refs_in_purport", []),
+                    "fetch_source": "live",
+                    "error": None,
+                }
+                # Update cache
+                key = _cache_key(scripture, chapter, verse)
+                cache[key] = {k: v for k, v in result.items() if k != "fetch_source"}
+                cache_modified = True
+                results[idx] = result
+            elif response.status_code == 404:
+                logger.warning("Verse not found on vedabase.io: %s", url)
+                results[idx] = {
+                    "url": url,
+                    "verified": False,
+                    "fetch_source": "not_found",
+                    "error": f"HTTP 404: Verse not found at {url}",
+                }
+            else:
+                results[idx] = {
+                    "url": url,
+                    "verified": False,
+                    "fetch_source": "not_found",
+                    "error": f"HTTP {response.status_code} from vedabase.io",
+                }
+
+        except httpx.TimeoutException:
+            logger.error("Vedabase.io request timed out: %s", url)
+            results[idx] = {
+                "url": url,
+                "verified": False,
+                "fetch_source": "not_found",
+                "error": f"Request timed out after {VEDABASE_TIMEOUT}s",
+            }
+        except Exception as e:
+            logger.error("Vedabase.io fetch failed: %s — %s", url, e)
+            results[idx] = {
+                "url": url,
+                "verified": False,
+                "fetch_source": "not_found",
+                "error": str(e),
+            }
+
+        # Rate limiting between live fetches
+        time.sleep(VEDABASE_REQUEST_DELAY)
+
+    # Pass 3: save cache once if modified
+    if cache_modified:
+        _save_cache(cache_path, cache)
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # CrewAI BaseTool wrapper
 # ---------------------------------------------------------------------------
