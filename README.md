@@ -39,13 +39,59 @@ cd frontend
 npm install && npm run dev
 ```
 
-The web UI includes:
-- **Job submission form** with configurable Whisper model/backend, enrichment mode, and advanced options
-- **Real-time job progress** tracking with step-by-step status updates
-- **ISKCON Desire Tree audio browser** for browsing and selecting lecture audio files
-- **Topic-based browsing** across 40+ categorized lecture topics
-- **Search** with speaker-level grouping across the audio library
-- **Output viewer** with rendered Markdown and downloadable files
+The frontend runs at `http://localhost:5173` and the API at `http://localhost:8000`.
+
+### Using the Web UI
+
+**1. Submit a Job**
+
+Enter one or more audio URLs (one per line) in the submission form. You can paste URLs directly or use the **Browse ISKCON Desire Tree Audio** button to find lectures.
+
+| Field | Description |
+|-------|-------------|
+| **Audio URLs** | Paste URLs or use the audio browser to select lectures |
+| **Title** | Name for the output file (auto-derived from source if blank) |
+| **Prompt** | Optional custom instructions for LLM enrichment (e.g., "Focus on practical applications") |
+
+Click **Advanced Options** to configure:
+
+| Option | Choices | Default |
+|--------|---------|---------|
+| Speaker | Free text | *(none)* |
+| Whisper Model | tiny, base, small, medium, large-v3 | large-v3 |
+| Whisper Backend | faster-whisper (CPU), whisper.cpp (Metal/CoreML) | faster-whisper |
+| Speaker Diarization | on/off | off |
+| LLM Enrichment | on/off | on |
+| Enrichment Mode | Auto, Lecture-centric, Verse-centric | Auto |
+| Generate PDF | on/off | off |
+| VAD Filter | on/off | on |
+
+**2. Browse Audio Library**
+
+Click **Browse ISKCON Desire Tree Audio** to open the audio browser with three tabs:
+
+- **Browse** — Navigate the directory tree of `audio.iskcondesiretree.com`. Click folders to drill down, click audio files to select them.
+- **Search** — Type a keyword (e.g., "Bhagavad Gita", "Radhanath Swami") to search across all lectures. Results are grouped by speaker.
+- **Topics** — Browse 40+ categorized topics (Bhagavad Gita, Srimad Bhagavatam, Festivals, Philosophy, etc.). Click a topic card to see matching lectures.
+
+Selected audio files are added to the URL list in the submission form.
+
+**3. Monitor Progress**
+
+After submitting, the job appears in the dashboard with real-time status updates:
+
+```
+Downloading → Transcribing → Enriching → Validating → Compiling → Completed
+```
+
+Each step shows elapsed time and details (e.g., "Transcribed: 356 segments, 2101s audio").
+
+**4. View Results**
+
+Click a completed job to see:
+- Rendered Markdown output with full lecture notes
+- Download links for `.md` and `.pdf` files
+- Job configuration and timing details
 
 ## Enrichment Modes
 
