@@ -21,7 +21,7 @@ except ImportError:
     Agent = None  # type: ignore[assignment,misc]
     Task = None   # type: ignore[assignment,misc]
 
-from lecture_agents.config.constants import PIPELINE_OUTPUT_DIR
+from lecture_agents.config.constants import GLOSSARY_MIN_ENTRIES, PIPELINE_OUTPUT_DIR
 from lecture_agents.exceptions import CompilationError
 from lecture_agents.schemas.compiler_output import (
     BookOutput,
@@ -189,6 +189,11 @@ def run_compiler_pipeline(
         warnings.append("Book is unusually short (< 1000 words)")
     if unverified_count > 0:
         warnings.append(f"{unverified_count} verse references could not be verified")
+    if len(glossary_entries) < GLOSSARY_MIN_ENTRIES:
+        warnings.append(
+            f"Glossary has only {len(glossary_entries)} entries "
+            f"(minimum recommended: {GLOSSARY_MIN_ENTRIES})"
+        )
 
     report = CompilationReport(
         total_chapters=len(chapters),

@@ -343,7 +343,7 @@ class TestEnrichedMarkdownRepetition:
         enriched = _make_enriched(enriched_markdown=md)
         result = _check_enriched_markdown_repetition(enriched)
         assert not result.passed
-        assert result.severity == CheckSeverity.CRITICAL
+        assert result.severity == CheckSeverity.WARNING
 
 
 @pytest.mark.pipeline
@@ -415,11 +415,12 @@ class TestValidationPipeline:
         assert report.overall_pass  # No critical failures
         assert report.warnings > 0
 
-    def test_repeated_markdown_raises(self):
-        """Repeated enriched markdown should raise ValidationError."""
+    def test_repeated_markdown_warns(self):
+        """Repeated enriched markdown should warn but not raise."""
         repeated = "This hallucinated text keeps repeating over and over."
         md = "\n\n".join([repeated] * 10)
         transcript = _make_transcript()
         enriched = _make_enriched(enriched_markdown=md)
-        with pytest.raises(ValidationError, match="CRITICAL"):
-            run_validation_pipeline(transcript, enriched)
+        # Downgraded to WARNING — should not raise
+        report = run_validation_pipeline(transcript, enriched)
+        assert report.warnings > 0

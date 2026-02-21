@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from lecture_agents.api.models import JobCreateRequest, JobStatus, PipelineStep
+from lecture_agents.api.models import JobCreateRequest, JobRetryRequest, JobStatus, PipelineStep
 from lecture_agents.config.constants import (
     CHECKPOINT_DIR_NAME,
     JOB_METADATA_FILENAME,
@@ -329,7 +329,7 @@ class JobManager:
         with self._lock:
             return list(self._jobs.values())
 
-    def _run_pipeline(self, record: JobRecord) -> None:
+    def _run_pipeline(self, record: JobRecord, from_agent: int = 1) -> None:
         """Execute the pipeline in a background thread."""
         from lecture_agents.orchestrator import (
             run_multi_url_pipeline,
@@ -338,7 +338,15 @@ class JobManager:
 
         record.status = JobStatus.RUNNING
         record.started_at = datetime.now()
-        record.current_step = PipelineStep.DOWNLOADING
+
+        agent_to_step = {
+            1: PipelineStep.DOWNLOADING,
+            2: PipelineStep.TRANSCRIBING,
+            3: PipelineStep.ENRICHING,
+            4: PipelineStep.COMPILING,
+            5: PipelineStep.PDF_GENERATING,
+        }
+        record.current_step = agent_to_step.get(from_agent, PipelineStep.DOWNLOADING)
 
         step_descriptions = {
             "downloading": "Downloading audio from source URL",
@@ -364,7 +372,8 @@ class JobManager:
                 if up["status"] not in ("completed", "failed"):
                     up["status"] = step
 
-        _on_progress("downloading")
+        initial_step = agent_to_step.get(from_agent, PipelineStep.DOWNLOADING).value
+        _on_progress(initial_step)
 
         try:
             kwargs = {
@@ -380,6 +389,7 @@ class JobManager:
                 "prompt": record.config["prompt"],
                 "enrichment_mode": record.config.get("enrichment_mode", "auto"),
                 "progress_callback": _on_progress,
+                "from_agent": from_agent,
             }
 
             if len(record.urls) == 1:
@@ -484,6 +494,84 @@ class JobManager:
             self._save_job(record)
 
         return record
+
+    def _detect_resume_agent(self, record: JobRecord) -> int:
+        """Determine the best from_agent for retrying a failed job.
+
+        Inspects which checkpoints exist and the failed step to pick the
+        earliest agent that needs re-running.
+        """
+        if not record.output_dir:
+            return 1
+
+        ckpt = Path(record.output_dir) / CHECKPOINT_DIR_NAME
+
+        # Map failed step → which agent to re-run
+        step_to_agent = {
+            PipelineStep.DOWNLOADING: 1,
+            PipelineStep.TRANSCRIBING: 2,
+            PipelineStep.ENRICHING: 3,
+            # Validation failures usually indicate transcript/enrichment issues
+            PipelineStep.VALIDATING: 2,
+            PipelineStep.COMPILING: 4,
+            PipelineStep.PDF_GENERATING: 5,
+        }
+
+        # Default from the failed step
+        default = step_to_agent.get(record.current_step, 1)
+
+        # But only if earlier checkpoints exist to support it
+        if default >= 2 and not (ckpt / "manifest.json").exists():
+            return 1
+        if default >= 3 and not (ckpt / "url_001_transcript.json").exists():
+            return 2
+
+        return default
+
+    def retry_job(self, job_id: str, request: Optional[JobRetryRequest] = None) -> JobRecord:
+        """Retry a failed job, resuming from checkpoints.
+
+        Creates a new JobRecord that reuses the original job's config, URLs,
+        and output_dir, then passes from_agent to skip completed stages.
+        """
+        with self._lock:
+            original = self._jobs.get(job_id)
+        if not original:
+            raise ValueError(f"Job {job_id} not found")
+        if original.status != JobStatus.FAILED:
+            raise ValueError(f"Job {job_id} is {original.status.value}, not failed")
+
+        from_agent = (request.from_agent if request and request.from_agent else None) \
+            or self._detect_resume_agent(original)
+
+        # Create new job record reusing original config
+        new_job_id = uuid.uuid4().hex[:12]
+        new_record = JobRecord(
+            job_id=new_job_id,
+            urls=original.urls,
+            title=original.title,
+            config={**original.config, "from_agent": from_agent},
+            output_dir=original.output_dir,
+            url_progress=[
+                {"url": url, "order": i + 1, "status": "pending", "error": None}
+                for i, url in enumerate(original.urls)
+            ],
+        )
+        new_record.progress_log.append(ProgressEntry(
+            timestamp=datetime.now(),
+            step="retry",
+            message=f"Retrying from agent {from_agent} (original job: {job_id})",
+        ))
+
+        with self._lock:
+            self._jobs[new_job_id] = new_record
+        self._executor.submit(self._run_pipeline, new_record, from_agent)
+
+        logger.info(
+            "Job %s retrying as %s (from_agent=%d)",
+            job_id, new_job_id, from_agent,
+        )
+        return new_record
 
     def shutdown(self) -> None:
         """Graceful shutdown: wait for running jobs to finish."""

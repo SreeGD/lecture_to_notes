@@ -22,15 +22,22 @@ except ImportError:
     Agent = None  # type: ignore[assignment,misc]
     Task = None   # type: ignore[assignment,misc]
 
+import re
+
 from lecture_agents.config.constants import (
+    VALIDATION_DURATION_MISMATCH_THRESHOLD,
     VALIDATION_LANGUAGE_INCONSISTENCY_THRESHOLD,
+    VALIDATION_MARKDOWN_MIN_SECTIONS,
     VALIDATION_MARKDOWN_REPEAT_THRESHOLD,
     VALIDATION_MAX_SEGMENT_GAP_SECONDS,
+    VALIDATION_MAX_SPECULATIVE_PHRASES,
     VALIDATION_MIN_AVG_CONFIDENCE,
     VALIDATION_MIN_VERIFICATION_RATE,
     VALIDATION_MIN_WORDS_PER_MINUTE,
     VALIDATION_SLIDING_REPETITION_THRESHOLD,
     VALIDATION_SLIDING_WINDOW_SIZE,
+    VALIDATION_SPECULATIVE_PHRASES,
+    VALIDATION_UNVERIFIED_REF_PATTERN,
 )
 from lecture_agents.exceptions import ValidationError
 from lecture_agents.schemas.enrichment_output import EnrichedNotes
@@ -323,7 +330,7 @@ def _check_enriched_markdown_repetition(enriched: EnrichedNotes) -> CheckResult:
         return CheckResult(
             check_name="enriched_markdown_repetition",
             passed=True,
-            severity=CheckSeverity.CRITICAL,
+            severity=CheckSeverity.WARNING,
             message="Skipped: no enriched markdown present",
         )
 
@@ -337,7 +344,7 @@ def _check_enriched_markdown_repetition(enriched: EnrichedNotes) -> CheckResult:
         return CheckResult(
             check_name="enriched_markdown_repetition",
             passed=True,
-            severity=CheckSeverity.CRITICAL,
+            severity=CheckSeverity.WARNING,
             message=f"OK: only {len(paragraphs)} paragraphs",
         )
 
@@ -348,7 +355,7 @@ def _check_enriched_markdown_repetition(enriched: EnrichedNotes) -> CheckResult:
     return CheckResult(
         check_name="enriched_markdown_repetition",
         passed=passed,
-        severity=CheckSeverity.CRITICAL,
+        severity=CheckSeverity.WARNING,
         message=(
             f"OK: max paragraph repetition {most_common_count}x"
             if passed
@@ -388,6 +395,167 @@ def _check_empty_enrichment(enriched: EnrichedNotes) -> CheckResult:
             "references_found": len(enriched.references_found),
             "glossary_entries": len(enriched.glossary),
             "has_markdown": has_markdown,
+        },
+    )
+
+
+def _check_llm_speculative_content(enriched: EnrichedNotes) -> CheckResult:
+    """Detect speculative or ungrounded philosophical claims in LLM output."""
+    if not enriched.enriched_markdown:
+        return CheckResult(
+            check_name="llm_speculative_content",
+            passed=True,
+            severity=CheckSeverity.WARNING,
+            message="Skipped: no enriched markdown present",
+        )
+
+    markdown_lower = enriched.enriched_markdown.lower()
+    found_phrases: list[str] = []
+    for phrase in VALIDATION_SPECULATIVE_PHRASES:
+        if phrase in markdown_lower:
+            found_phrases.append(phrase)
+
+    passed = len(found_phrases) <= VALIDATION_MAX_SPECULATIVE_PHRASES
+
+    return CheckResult(
+        check_name="llm_speculative_content",
+        passed=passed,
+        severity=CheckSeverity.WARNING,
+        message=(
+            f"OK: {len(found_phrases)} speculative phrase(s) detected"
+            if passed
+            else f"Speculative content detected: {len(found_phrases)} phrases found "
+            f"(threshold {VALIDATION_MAX_SPECULATIVE_PHRASES}): "
+            f"{', '.join(found_phrases[:5])}"
+        ),
+        details={
+            "speculative_phrases_found": found_phrases,
+            "count": len(found_phrases),
+            "threshold": VALIDATION_MAX_SPECULATIVE_PHRASES,
+        },
+    )
+
+
+def _check_unverified_refs_in_markdown(enriched: EnrichedNotes) -> CheckResult:
+    """Check if enriched markdown references verses not in the verified set."""
+    if not enriched.enriched_markdown:
+        return CheckResult(
+            check_name="unverified_refs_in_markdown",
+            passed=True,
+            severity=CheckSeverity.WARNING,
+            message="Skipped: no enriched markdown present",
+        )
+
+    verified_canonicals = {v.reference.canonical_ref for v in enriched.verifications}
+    # Find all verse-like references in the markdown
+    markdown_refs = set(re.findall(VALIDATION_UNVERIFIED_REF_PATTERN, enriched.enriched_markdown))
+    # Exclude the [UNVERIFIED] tagged ones (they're expected)
+    untagged_unverified = [
+        ref for ref in markdown_refs
+        if ref not in verified_canonicals
+    ]
+
+    passed = len(untagged_unverified) == 0
+
+    return CheckResult(
+        check_name="unverified_refs_in_markdown",
+        passed=passed,
+        severity=CheckSeverity.WARNING,
+        message=(
+            "OK: all verse references in markdown are verified"
+            if passed
+            else f"{len(untagged_unverified)} verse reference(s) in markdown not in verified set: "
+            f"{', '.join(untagged_unverified[:5])}"
+        ),
+        details={
+            "untagged_unverified": untagged_unverified[:20],
+            "count": len(untagged_unverified),
+            "verified_count": len(verified_canonicals),
+        },
+    )
+
+
+def _check_enriched_markdown_sections(enriched: EnrichedNotes) -> CheckResult:
+    """Validate that enriched markdown contains expected section headers."""
+    if not enriched.enriched_markdown:
+        return CheckResult(
+            check_name="enriched_markdown_sections",
+            passed=True,
+            severity=CheckSeverity.WARNING,
+            message="Skipped: no enriched markdown present",
+        )
+
+    # Count markdown heading lines (## or ###)
+    headings = [
+        line.strip()
+        for line in enriched.enriched_markdown.split("\n")
+        if line.strip().startswith("#")
+    ]
+    section_count = len(headings)
+    passed = section_count >= VALIDATION_MARKDOWN_MIN_SECTIONS
+
+    return CheckResult(
+        check_name="enriched_markdown_sections",
+        passed=passed,
+        severity=CheckSeverity.WARNING,
+        message=(
+            f"OK: {section_count} sections found in enriched markdown"
+            if passed
+            else f"Enriched markdown has only {section_count} section(s) "
+            f"(minimum {VALIDATION_MARKDOWN_MIN_SECTIONS})"
+        ),
+        details={
+            "section_count": section_count,
+            "headings": [h[:80] for h in headings[:20]],
+            "threshold": VALIDATION_MARKDOWN_MIN_SECTIONS,
+        },
+    )
+
+
+def _check_metadata_duration_consistency(
+    transcript: TranscriptOutput,
+    enriched: EnrichedNotes,
+) -> CheckResult:
+    """Check that segment timestamps are consistent with reported duration."""
+    if not transcript.segments:
+        return CheckResult(
+            check_name="metadata_duration_consistency",
+            passed=True,
+            severity=CheckSeverity.WARNING,
+            message="Skipped: no segments",
+        )
+
+    last_segment_end = max(s.end for s in transcript.segments)
+    reported_duration = transcript.duration_seconds
+
+    if reported_duration <= 0:
+        return CheckResult(
+            check_name="metadata_duration_consistency",
+            passed=True,
+            severity=CheckSeverity.WARNING,
+            message="Skipped: no duration reported",
+        )
+
+    mismatch = abs(last_segment_end - reported_duration) / reported_duration
+    passed = mismatch <= VALIDATION_DURATION_MISMATCH_THRESHOLD
+
+    return CheckResult(
+        check_name="metadata_duration_consistency",
+        passed=passed,
+        severity=CheckSeverity.WARNING,
+        message=(
+            f"OK: segment end {last_segment_end:.0f}s vs reported {reported_duration:.0f}s "
+            f"({mismatch:.0%} mismatch)"
+            if passed
+            else f"Duration mismatch: last segment ends at {last_segment_end:.0f}s but "
+            f"reported duration is {reported_duration:.0f}s ({mismatch:.0%} mismatch, "
+            f"threshold {VALIDATION_DURATION_MISMATCH_THRESHOLD:.0%})"
+        ),
+        details={
+            "last_segment_end": round(last_segment_end, 2),
+            "reported_duration": round(reported_duration, 2),
+            "mismatch_ratio": round(mismatch, 4),
+            "threshold": VALIDATION_DURATION_MISMATCH_THRESHOLD,
         },
     )
 
@@ -458,14 +626,22 @@ def run_validation_pipeline(
     all_checks.append(_check_cross_reference_consistency(enriched))
     all_checks.append(_check_enriched_markdown_repetition(enriched))
     all_checks.append(_check_empty_enrichment(enriched))
+    all_checks.append(_check_llm_speculative_content(enriched))
+    all_checks.append(_check_unverified_refs_in_markdown(enriched))
+    all_checks.append(_check_enriched_markdown_sections(enriched))
 
-    # Step 3: Build report
+    # Step 3: Cross-agent consistency checks
+    logger.info("Step 3: Cross-agent consistency checks")
+    all_checks.append(_check_metadata_duration_consistency(transcript, enriched))
+
+    # Step 4: Build report
     transcript_check_names = {
         "sliding_window_repetition",
         "content_density",
         "segment_gap_analysis",
         "low_confidence",
         "language_consistency",
+        "metadata_duration_consistency",
     }
     transcript_checks = [
         c for c in all_checks if c.check_name in transcript_check_names

@@ -115,6 +115,20 @@ class JobDetail(BaseModel):
     config: dict = Field(default_factory=dict)
 
 
+class JobRetryRequest(BaseModel):
+    """POST /api/v1/jobs/{job_id}/retry request body."""
+
+    from_agent: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=5,
+        description=(
+            "Agent to resume from (1=download, 2=transcribe, 3=enrich, 4=compile, 5=pdf). "
+            "If omitted, auto-detected from the failed step."
+        ),
+    )
+
+
 class JobCreateResponse(BaseModel):
     """POST /api/v1/jobs response."""
 

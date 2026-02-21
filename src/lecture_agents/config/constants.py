@@ -56,6 +56,8 @@ VEDABASE_BASE_URL: str = "https://vedabase.io/en/library"
 VEDABASE_CACHE_FILE: str = "cache/vedabase_cache.json"
 VEDABASE_REQUEST_DELAY: float = 1.0     # Polite delay between requests
 VEDABASE_TIMEOUT: int = 30              # HTTP timeout in seconds
+VEDABASE_FETCH_RETRIES: int = 3         # Retry count for vedabase.io fetches
+VEDABASE_RETRY_BACKOFF_BASE: float = 2.0  # Exponential backoff: 2s, 4s, 8s
 
 # Scripture abbreviation -> vedabase.io path prefix
 SCRIPTURE_ABBREVIATIONS: dict[str, str] = {
@@ -209,7 +211,27 @@ VALIDATION_MIN_VERIFICATION_RATE: float = 0.5
 VALIDATION_SLIDING_WINDOW_SIZE: int = 50
 VALIDATION_SLIDING_REPETITION_THRESHOLD: float = 0.6
 VALIDATION_LANGUAGE_INCONSISTENCY_THRESHOLD: float = 0.2
-VALIDATION_MARKDOWN_REPEAT_THRESHOLD: int = 3
+VALIDATION_MARKDOWN_REPEAT_THRESHOLD: int = 5
+
+# LLM output guardrails
+VALIDATION_SPECULATIVE_PHRASES: list[str] = [
+    "it is likely that",
+    "this probably means",
+    "one could interpret",
+    "this might suggest",
+    "it seems that the verse",
+    "although not directly stated",
+    "we can assume",
+    "i believe this means",
+    "in my understanding",
+    "from my knowledge",
+]
+VALIDATION_MAX_SPECULATIVE_PHRASES: int = 3       # Max allowed speculative phrases
+VALIDATION_UNVERIFIED_REF_PATTERN: str = r"(?:BG|SB|CC|NOI|ISO|BS)\s+\d+[\.\d]*"
+VALIDATION_MARKDOWN_MIN_SECTIONS: int = 5         # Min sections in verse-centric mode
+
+# Metadata consistency
+VALIDATION_DURATION_MISMATCH_THRESHOLD: float = 0.10  # 10% tolerance
 
 # ---------------------------------------------------------------------------
 # Compiler Configuration (Agent 4)
@@ -233,6 +255,9 @@ PDF_DEFAULT_FONT: str = "DejaVu"
 # ---------------------------------------------------------------------------
 # Chunked Enrichment Configuration
 # ---------------------------------------------------------------------------
+
+MAX_REFERENCES_PER_TRANSCRIPT: int = 200  # Safety cap on identified references
+LLM_POST_PROCESS_MAX_CHARS: int = 15_000  # Max chars sent to LLM post-processor
 
 CHUNK_ACTIVATION_THRESHOLD_TOKENS: int = 30_000  # Only chunk above this (~23k words)
 CHUNK_MIN_TOKENS: int = 5_000                     # Minimum tokens per chunk

@@ -527,7 +527,17 @@ def run_multi_url_pipeline(
             state.errors.append({"phase": "validation", "error": str(e)})
 
     if not validated_enriched:
-        raise PipelineError("All outputs failed validation")
+        raise PipelineError(
+            f"All {len(enriched_list)} outputs failed validation. "
+            f"Errors: {[e.get('error', '') for e in state.errors[-len(enriched_list):]]}"
+        )
+
+    if len(validated_enriched) < len(enriched_list):
+        logger.warning(
+            "[%s] Partial recovery: %d/%d sources passed validation, "
+            "continuing with passing sources",
+            state.run_id, len(validated_enriched), len(enriched_list),
+        )
 
     if progress_callback:
         progress_callback(

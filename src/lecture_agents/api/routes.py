@@ -22,6 +22,7 @@ from lecture_agents.api.models import (
     JobCreateResponse,
     JobDetail,
     JobOutputResponse,
+    JobRetryRequest,
     JobStatus,
     JobSummary,
     ProgressLogEntry,
@@ -135,6 +136,33 @@ async def cancel_job(job_id: str, request: Request):
         )
     jm.cancel_job(job_id)
     return {"job_id": job_id, "message": "Cancellation requested"}
+
+
+@router.post("/jobs/{job_id}/retry", response_model=JobCreateResponse, status_code=202)
+async def retry_job(job_id: str, request: Request, body: JobRetryRequest = None):
+    """Retry a failed job, resuming from checkpoints."""
+    jm = request.app.state.job_manager
+    record = jm.get_job(job_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    if record.status != JobStatus.FAILED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job {job_id} is {record.status.value}, only failed jobs can be retried",
+        )
+    try:
+        new_record = jm.retry_job(job_id, body)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    from_agent = new_record.config.get("from_agent", 1)
+    agent_names = {1: "download", 2: "transcribe", 3: "enrich", 4: "compile", 5: "pdf"}
+    return JobCreateResponse(
+        job_id=new_record.job_id,
+        status=JobStatus.QUEUED,
+        message=f"Retrying from {agent_names.get(from_agent, 'agent ' + str(from_agent))} "
+                f"(original job: {job_id}).",
+    )
 
 
 @router.get("/jobs/{job_id}/output", response_model=JobOutputResponse)

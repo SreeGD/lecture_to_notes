@@ -32,7 +32,9 @@ from lecture_agents.config.constants import (
     SCRIPTURE_ABBREVIATIONS,
     VEDABASE_BASE_URL,
     VEDABASE_CACHE_FILE,
+    VEDABASE_FETCH_RETRIES,
     VEDABASE_REQUEST_DELAY,
+    VEDABASE_RETRY_BACKOFF_BASE,
     VEDABASE_TIMEOUT,
 )
 
@@ -114,6 +116,44 @@ def build_vedabase_url(scripture: str, chapter: str, verse: str) -> Optional[str
 # ---------------------------------------------------------------------------
 # HTML parsing
 # ---------------------------------------------------------------------------
+
+
+def _fetch_with_retry(
+    url: str,
+    retries: int = VEDABASE_FETCH_RETRIES,
+    backoff_base: float = VEDABASE_RETRY_BACKOFF_BASE,
+) -> httpx.Response:
+    """Fetch a URL with exponential backoff retry on timeout/5xx errors."""
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            response = httpx.get(
+                url,
+                timeout=VEDABASE_TIMEOUT,
+                follow_redirects=True,
+                headers={"User-Agent": "LectureToBook/1.0 (vedabase-reference-tool)"},
+            )
+            if response.status_code < 500:
+                return response
+            # 5xx: retry with backoff
+            logger.warning(
+                "Vedabase.io returned %d for %s (attempt %d/%d)",
+                response.status_code, url, attempt + 1, retries,
+            )
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            last_exc = e
+            logger.warning(
+                "Vedabase.io request failed for %s (attempt %d/%d): %s",
+                url, attempt + 1, retries, e,
+            )
+        if attempt < retries - 1:
+            delay = backoff_base ** (attempt + 1)
+            time.sleep(delay)
+
+    # Exhausted retries — raise last exception or return a synthetic 503
+    if last_exc:
+        raise last_exc
+    return response  # type: ignore[possibly-undefined]
 
 
 def _parse_vedabase_page(html: str) -> dict:
@@ -268,15 +308,10 @@ def fetch_verse(
             "error": f"Unknown scripture abbreviation: {scripture}",
         }
 
-    # Step 3: Fetch live
+    # Step 3: Fetch live (with retry)
     try:
         logger.info("Fetching from vedabase.io: %s", url)
-        response = httpx.get(
-            url,
-            timeout=VEDABASE_TIMEOUT,
-            follow_redirects=True,
-            headers={"User-Agent": "LectureToBook/1.0 (vedabase-reference-tool)"},
-        )
+        response = _fetch_with_retry(url)
 
         if response.status_code == 200:
             content = _parse_vedabase_page(response.text)
@@ -398,12 +433,7 @@ def batch_fetch_verses(
 
         try:
             logger.info("Batch fetching from vedabase.io: %s", url)
-            response = httpx.get(
-                url,
-                timeout=VEDABASE_TIMEOUT,
-                follow_redirects=True,
-                headers={"User-Agent": "LectureToBook/1.0 (vedabase-reference-tool)"},
-            )
+            response = _fetch_with_retry(url)
 
             if response.status_code == 200:
                 content = _parse_vedabase_page(response.text)

@@ -22,7 +22,7 @@ except ImportError:
     Agent = None  # type: ignore[assignment,misc]
     Task = None   # type: ignore[assignment,misc]
 
-from lecture_agents.config.constants import VEDABASE_CACHE_FILE
+from lecture_agents.config.constants import MAX_REFERENCES_PER_TRANSCRIPT, VEDABASE_CACHE_FILE
 from lecture_agents.exceptions import EnrichmentError
 from lecture_agents.schemas.enrichment_output import (
     EnrichedNotes,
@@ -190,6 +190,29 @@ def run_enrichment_pipeline(
     else:
         logger.info("Step 1c: Skipping MCP fuzzy matching (mcp SDK not available)")
 
+    # Unified deduplication across all 3 identification paths
+    seen_canonicals: set[str] = set()
+    deduped_refs: list[dict] = []
+    for ref_dict in raw_refs:
+        canonical = ref_dict.get("canonical_ref", "")
+        if canonical and canonical not in seen_canonicals:
+            seen_canonicals.add(canonical)
+            deduped_refs.append(ref_dict)
+    if len(deduped_refs) < len(raw_refs):
+        logger.info(
+            "Deduplication: %d -> %d unique references",
+            len(raw_refs), len(deduped_refs),
+        )
+    raw_refs = deduped_refs
+
+    # Enforce max reference count
+    if len(raw_refs) > MAX_REFERENCES_PER_TRANSCRIPT:
+        logger.warning(
+            "Reference cap: keeping first %d of %d references",
+            MAX_REFERENCES_PER_TRANSCRIPT, len(raw_refs),
+        )
+        raw_refs = raw_refs[:MAX_REFERENCES_PER_TRANSCRIPT]
+
     # Build Reference objects
     references: list[Reference] = []
     for ref_dict in raw_refs:
@@ -210,6 +233,53 @@ def run_enrichment_pipeline(
         "Verification complete: %d/%d verified (%.0f%%)",
         verified_count, total_refs, rate * 100,
     )
+
+    # Step 2b: Verify cross-references found in purports (optional enhancement)
+    cross_refs_to_verify: list[dict] = []
+    existing_canonicals = {r.canonical_ref for r in references}
+    for v in verifications:
+        for xref_str in v.cross_refs_in_purport:
+            if xref_str not in existing_canonicals:
+                parts = xref_str.split()
+                if len(parts) >= 2:
+                    scripture = parts[0]
+                    rest = " ".join(parts[1:]).replace(" ", ".")
+                    if "." in rest:
+                        last_dot = rest.rfind(".")
+                        chapter, verse = rest[:last_dot], rest[last_dot + 1:]
+                    else:
+                        chapter, verse = "", rest
+                    cross_refs_to_verify.append({
+                        "scripture": scripture, "chapter": chapter, "verse": verse,
+                        "canonical_ref": xref_str,
+                    })
+                    existing_canonicals.add(xref_str)
+
+    if cross_refs_to_verify:
+        logger.info("Step 2b: Verifying %d cross-references from purports", len(cross_refs_to_verify))
+        xref_fetch_results = batch_fetch_verses(
+            [{"scripture": x["scripture"], "chapter": x["chapter"], "verse": x["verse"]}
+             for x in cross_refs_to_verify],
+            cache_path=cache_path,
+        )
+        xref_verified = 0
+        for xref_dict, result in zip(cross_refs_to_verify, xref_fetch_results):
+            if result.get("verified"):
+                xref_ref = Reference(
+                    scripture=xref_dict["scripture"],
+                    chapter=xref_dict["chapter"],
+                    verse=xref_dict["verse"],
+                    canonical_ref=xref_dict["canonical_ref"],
+                    segment_index=-1,
+                    context_text="Cross-reference from purport",
+                )
+                references.append(xref_ref)
+                verifications.append(_build_verification(xref_ref, result))
+                xref_verified += 1
+        logger.info(
+            "Cross-reference verification: %d/%d verified",
+            xref_verified, len(cross_refs_to_verify),
+        )
 
     # Step 3: Build glossary
     logger.info("Step 3: Building glossary")

@@ -25,6 +25,7 @@ from lecture_agents.config.constants import (
     HALLUCINATION_PHRASE_THRESHOLD,
     HALLUCINATION_PHRASES,
     HALLUCINATION_REPETITION_THRESHOLD,
+    LLM_POST_PROCESS_MAX_CHARS,
     WHISPER_MODEL_SIZE,
     WHISPER_VAD_FILTER,
 )
@@ -126,6 +127,23 @@ def run_transcription_pipeline(
     if not Path(audio_path).exists():
         raise TranscriptionError(f"Audio file not found: {audio_path}")
 
+    # Step 0: Verify whisper backend is available
+    if whisper_backend == "faster-whisper":
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError:
+            raise TranscriptionError(
+                "faster-whisper is not installed. Install with: pip install faster-whisper"
+            )
+    elif whisper_backend == "whisper.cpp":
+        try:
+            import pywhispercpp  # noqa: F401
+        except ImportError:
+            raise TranscriptionError(
+                "pywhispercpp is not installed. "
+                "Install with: pip install pywhispercpp"
+            )
+
     # Step 1: Build domain vocabulary prompt
     logger.info("Step 1: Building domain vocabulary prompt")
     initial_prompt = build_whisper_prompt(speaker_name=speaker_name)
@@ -188,16 +206,32 @@ def run_transcription_pipeline(
 
     post_processing_source = "regex"
 
-    # Step 5: LLM post-processing (optional)
+    # Step 5: LLM post-processing (optional, with token budget check)
     detected_slokas: list[DetectedSloka] = []
     if enable_llm_postprocess:
+        if len(corrected_text) > LLM_POST_PROCESS_MAX_CHARS:
+            logger.warning(
+                "Step 5: Text exceeds LLM post-processing budget (%d > %d chars); "
+                "truncating input to LLM while preserving full transcript",
+                len(corrected_text), LLM_POST_PROCESS_MAX_CHARS,
+            )
         logger.info("Step 5: Running LLM post-processing")
+        llm_input = corrected_text[:LLM_POST_PROCESS_MAX_CHARS]
+        was_truncated = len(corrected_text) > LLM_POST_PROCESS_MAX_CHARS
         llm_text, llm_segments, llm_slokas = post_process_transcript_llm(
-            corrected_text, raw_segments,
+            llm_input, raw_segments,
         )
-        if llm_text != corrected_text:
-            corrected_text = llm_text
-            raw_segments = llm_segments
+        if llm_text != llm_input:
+            if was_truncated:
+                # LLM only processed partial text — keep full transcript,
+                # but still use LLM-cleaned segments
+                logger.info(
+                    "Step 5: LLM applied to segments only (text was truncated)"
+                )
+                raw_segments = llm_segments
+            else:
+                corrected_text = llm_text
+                raw_segments = llm_segments
             post_processing_source = "llm"
 
         detected_slokas = [

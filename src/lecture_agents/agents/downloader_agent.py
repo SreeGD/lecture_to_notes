@@ -130,6 +130,16 @@ def _download_single(
         )
 
     file_size = Path(wav_path).stat().st_size
+    if file_size == 0:
+        return DownloadResult(
+            url=url, order=order, success=False,
+            error="Normalized audio file is empty (0 bytes) — possible corruption",
+        )
+    if file_size > MAX_AUDIO_SIZE_MB * 1024 * 1024:
+        return DownloadResult(
+            url=url, order=order, success=False,
+            error=f"Audio file exceeds hard limit: {file_size / (1024 * 1024):.0f} MB > {MAX_AUDIO_SIZE_MB} MB",
+        )
     if file_size > WARN_AUDIO_SIZE_MB * 1024 * 1024:
         logger.warning("Large audio file: %s (%.0f MB)", wav_path,
                        file_size / (1024 * 1024))
